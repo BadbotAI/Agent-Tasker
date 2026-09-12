@@ -32,8 +32,9 @@ from .core import (
     unfinished_dep_ids,
 )
 
-CARD_HEIGHT = 5  # 4 content lines + blank separator
-MIN_COL_WIDTH = 14
+CARD_HEIGHT = 11  # bordered card: border, 2-line title head, rule, 4-line body, meta, border (+gap)
+CARD_INNER_MIN = 8
+MIN_COL_WIDTH = 16
 WATCH_MS = 400  # db poll interval while idle
 
 _HELP = """\
@@ -237,27 +238,37 @@ class Board:
         curses.doupdate()
 
     def draw_card(self, stdscr, task: Task, y: int, x: int, w: int, selected: bool) -> None:
+        """Bordered mini-card: inverted 2-line title head, rule, then body."""
         dep_map = self.dep_status_map()
         blocked = is_blocked(task, dep_map)
         ready = is_ready(task, dep_map)
+        inner = max(CARD_INNER_MIN, w - 4)
 
-        name_attr = self.pairs.get(task.status, 0) | curses.A_BOLD
+        border_attr = self.pairs.get(task.status, 0)
         if task.status == DONE:
-            name_attr |= curses.A_DIM
+            border_attr |= curses.A_DIM
         if selected:
-            name_attr |= curses.A_REVERSE
-        mark = "!" if blocked else ("*" if ready else " ")
-        _safe(stdscr, y, x, f" #{task.id} {mark} {task.name}"[:w], name_attr)
+            border_attr |= curses.A_BOLD
 
+        # head: inverted bar in the status color, title forced to wrap over 2 lines
+        mark = "!" if blocked else ("*" if ready else " ")
+        title_attr = self.pairs.get(task.status, 0) | curses.A_BOLD | curses.A_REVERSE
+        if task.status == DONE:
+            title_attr |= curses.A_DIM
+        title_lines = textwrap.wrap(
+            f"#{task.id} {mark} {task.name}", width=inner, max_lines=2, placeholder=" …"
+        ) or [""]
+        while len(title_lines) < 2:
+            title_lines.append("")
+
+        # body: description/evidence excerpt (4 lines) + deps/blockers/ready meta
         body_attr = curses.A_DIM | (curses.A_REVERSE if selected else 0)
         body = task.description.strip() or task.evidence.strip()
-        if body:
-            excerpt = textwrap.wrap(body, width=max(8, w - 2), max_lines=2, placeholder=" …")
-        else:
-            excerpt = []
-        _safe(stdscr, y + 1, x + 1, (excerpt[0] if excerpt else "")[: w - 1], body_attr)
-        _safe(stdscr, y + 2, x + 1, (excerpt[1] if len(excerpt) > 1 else "")[: w - 1], body_attr)
-
+        excerpt = (
+            textwrap.wrap(body, width=inner, max_lines=4, placeholder=" …") if body else []
+        )
+        while len(excerpt) < 4:
+            excerpt.append("")
         parts: list[str] = []
         if task.depends_on:
             shown = ",".join(f"#{i}" for i in task.depends_on[:3])
@@ -269,7 +280,26 @@ class Board:
         meta_attr = (self.pairs["alert"] if blocked else curses.A_DIM)
         if selected:
             meta_attr |= curses.A_REVERSE
-        _safe(stdscr, y + 3, x + 1, " · ".join(parts)[: w - 1], meta_attr)
+
+        _safe(stdscr, y, x, ("┌" + "─" * max(0, w - 2) + "┐")[:w], border_attr)
+        rule = ("├" + "─" * max(0, w - 2) + "┤")[:w]
+        rows = [
+            (title_lines[0], title_attr),
+            (title_lines[1], title_attr),
+            (rule, border_attr),
+            (excerpt[0], body_attr),
+            (excerpt[1], body_attr),
+            (excerpt[2], body_attr),
+            (excerpt[3], body_attr),
+            (" · ".join(parts), meta_attr),
+        ]
+        for i, (line, attr) in enumerate(rows):
+            if line == rule:  # head/body separator spans the full card width
+                _safe(stdscr, y + 1 + i, x, rule, attr)
+                continue
+            padded = line[:inner].ljust(inner)
+            _safe(stdscr, y + 1 + i, x, f"│ {padded} │"[:w], attr)
+        _safe(stdscr, y + 9, x, ("└" + "─" * max(0, w - 2) + "┘")[:w], border_attr)
 
     def footer_text(self) -> str:
         task = self.selected()

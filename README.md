@@ -85,9 +85,10 @@ One SQLite file, WAL mode:
 | `r` | manual reload (the board also auto-reloads when the db changes) |
 | `?` / `q` | help / quit |
 
-Cards are 4 lines (name, description/evidence excerpt, deps/blockers/ready state),
-colored by status. `!` = blocked (red), `*` = ready, dimmed = done. The board watches
-the database file and its WAL side files, so changes from the CLI, MCP agents, or
+Cards are bordered mini-cards: a 2-line inverted title head in the status color,
+a rule, then a 4-line description/evidence body and a deps/blockers/ready meta
+line. `!` = blocked (red), `*` = ready, dimmed = done. The board watches the
+database file and its WAL side files, so changes from the CLI, MCP agents, or
 other TUI sessions appear within ~0.5s.
 
 ## MCP
