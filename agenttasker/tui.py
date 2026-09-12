@@ -419,7 +419,6 @@ class Board:
             return (f"  #{dep.id} ({dep.status}) {dep.name}", attr)
 
         lines: list = [
-            (f"{task.name}", bold),
             (f"STATUS   {status_label(task.status)}", status_attr),
             (f"PROJECT  {task.project}", dim),
             "─",
