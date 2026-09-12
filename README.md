@@ -37,6 +37,16 @@ Installs two equivalent commands: `agenttasker` and the short alias `atx`.
 Or standalone: `pipx install 'agenttasker[mcp]'` (once published / from a checkout:
 `pipx install '/path/to/AgentTasker[mcp]'`).
 
+## Use as a Codex skill
+
+```bash
+scripts/install-codex-skill.sh     # copies SKILL.md into ~/.codex/skills/agenttasker/
+```
+
+Codex loads skills at session start (restart to pick up changes) and needs a real
+file, not a symlink. Invoke explicitly with `$agenttasker`, or let Codex select it
+from the description.
+
 ## Quick start
 
 ```bash
