@@ -3,18 +3,20 @@
 Keys:
     h/Left  l/Right   select column        j/Down  k/Up  select task
     Enter             task details         m            move task (status menu)
-    < ,    >  .       move card left/right r            reload from db
+    < ,    >  .       move card left/right r            manual reload
     ?                 help                 q            quit
-Legend: '!' = blocked (unfinished deps or external blockers), dim = done.
+
+The board auto-reloads when the task database changes (other agents/humans
+writing via the CLI/MCP appear within ~0.5s). Cards span 4 lines: name,
+two-line description/evidence excerpt, and a deps/blockers/ready meta line.
 """
 
 from __future__ import annotations
 
 import curses
+import os
 import textwrap
 
-
-from . import render
 from .core import (
     DONE,
     STARTABLE_STATUSES,
@@ -30,8 +32,9 @@ from .core import (
     unfinished_dep_ids,
 )
 
-CARD_HEIGHT = 3  # two text lines + one blank separator
+CARD_HEIGHT = 5  # 4 content lines + blank separator
 MIN_COL_WIDTH = 14
+WATCH_MS = 400  # db poll interval while idle
 
 _HELP = """\
 Board keys
@@ -40,14 +43,19 @@ Board keys
   Enter                  task details (scroll with arrows, q/Enter closes)
   m                      move task to another status (menu)
   < or ,  /  > or .      move task one column left / right
-  r                      reload tasks from the database
+  r                      manual reload
   ?                      this help
   q                      quit
 
+The board watches the database and auto-reloads when other agents or
+humans change tasks (CLI, MCP, or another TUI session).
+
 Legend
-  !    blocked: unfinished dependencies or external blockers
-  dim  done tasks
-  card line 2 shows dependency ids / external blocker count
+  !    blocked: unfinished dependencies or external blockers (red)
+  *    ready to start now
+  card line 1  task name (status color)
+  card lines 2-3  description / evidence excerpt
+  card line 4  deps / external blockers / ready state
 """
 
 
@@ -74,9 +82,18 @@ class Board:
 
     # --- data
     def reload(self) -> None:
+        """Reload from db, keeping the selection on the same task when possible."""
+        selected = self.selected()
+        keep_id = selected.id if selected is not None else None
         self.tasks = self.store.list_tasks(self.project)
         self.by_id = {t.id: t for t in self.tasks}
         self.cols = {s: [t for t in self.tasks if t.status == s] for s in STATUSES}
+        if keep_id is not None:
+            for ci, status in enumerate(STATUSES):
+                for ri, task in enumerate(self.cols[status]):
+                    if task.id == keep_id:
+                        self.col, self.row = ci, ri
+                        break
         self.clamp_selection()
 
     def clamp_selection(self) -> None:
@@ -93,6 +110,20 @@ class Board:
     def dep_status_map(self) -> dict[int, str]:
         return {t.id: t.status for t in self.tasks}
 
+    # --- db watching
+    def db_stamp(self):
+        """Change detector across the db and its WAL side files (WAL writes
+        update -wal/-shm mtimes, not the main file's)."""
+        stamp = []
+        for suffix in ("", "-wal", "-shm"):
+            path = str(self.store.path) + suffix
+            try:
+                info = os.stat(path)
+                stamp.append((info.st_mtime_ns, info.st_size))
+            except OSError:
+                stamp.append(None)
+        return tuple(stamp)
+
     # --- colors
     def init_colors(self) -> None:
         self.pairs: dict[str, int] = {}
@@ -106,12 +137,15 @@ class Board:
                 "in_progress": 3,  # yellow
                 "in_review": 5,    # magenta
                 "done": 2,         # green
+                "alert": 1,        # red
             }
-            for i, (status, color) in enumerate(palette.items(), start=1):
+            for i, (name, color) in enumerate(palette.items(), start=1):
                 curses.init_pair(i, color, -1)
-                self.pairs[status] = curses.color_pair(i)
+                self.pairs[name] = curses.color_pair(i)
         except curses.error:
-            self.pairs = {s: 0 for s in STATUSES}
+            self.pairs = {name: 0 for name in
+                          ("deferred", "backlog", "todo", "in_progress",
+                           "in_review", "done", "alert")}
 
     # --- main loop
     def run(self, stdscr) -> int:
@@ -119,9 +153,20 @@ class Board:
         stdscr.keypad(True)
         self.init_colors()
         self.reload()
+        stdscr.timeout(WATCH_MS)
+        stamp = self.db_stamp()
         while not self.done:
             self.draw(stdscr)
-            self.handle(stdscr, stdscr.getch())
+            ch = stdscr.getch()
+            if ch == curses.ERR:  # idle tick: poll the db for outside changes
+                current = self.db_stamp()
+                if current != stamp:
+                    stamp = current
+                    self.reload()
+                    self.message = "· db changed — reloaded"
+                continue
+            self.handle(stdscr, ch)
+            stamp = self.db_stamp()  # our own writes must not read as foreign
         return 0
 
     # --- drawing
@@ -131,7 +176,8 @@ class Board:
         _safe(stdscr, 0, 0, f" {self.project} — agenttasker board", curses.A_BOLD)
         _safe(
             stdscr, 1, 0,
-            " ←→ column  ↑↓ task  Enter: details  m: move  </>: shift  r: reload  ?: help  q: quit",
+            " ←→ column  ↑↓ task  Enter: details  m: move  </>: shift  ?: help  q: quit"
+            "  · auto-reload on db change",
             curses.A_DIM,
         )
 
@@ -150,7 +196,7 @@ class Board:
 
         top = 2
         body_h = height - top - 1
-        max_cards = max(0, body_h // CARD_HEIGHT)
+        max_cards = body_h // CARD_HEIGHT
 
         for ci, status in enumerate(STATUSES):
             x = ci * (col_w + gap)
@@ -182,6 +228,9 @@ class Board:
                 )
                 y += CARD_HEIGHT
 
+        if max_cards == 0:
+            _safe(stdscr, top + 1, 0, " terminal too short to show cards", curses.A_DIM)
+
         footer = self.message if self.message else self.footer_text()
         _safe(stdscr, height - 1, 0, footer[: width - 1], curses.A_DIM)
         stdscr.noutrefresh()
@@ -190,25 +239,37 @@ class Board:
     def draw_card(self, stdscr, task: Task, y: int, x: int, w: int, selected: bool) -> None:
         dep_map = self.dep_status_map()
         blocked = is_blocked(task, dep_map)
-        mark = "!" if blocked else ("*" if task.status in STARTABLE_STATUSES and is_ready(task, dep_map) else " ")
-        attr = self.pairs.get(task.status, 0)
+        ready = is_ready(task, dep_map)
+
+        name_attr = self.pairs.get(task.status, 0) | curses.A_BOLD
         if task.status == DONE:
-            attr |= curses.A_DIM
+            name_attr |= curses.A_DIM
         if selected:
-            attr |= curses.A_REVERSE
+            name_attr |= curses.A_REVERSE
+        mark = "!" if blocked else ("*" if ready else " ")
+        _safe(stdscr, y, x, f" #{task.id} {mark} {task.name}"[:w], name_attr)
 
-        line1 = f" #{task.id} {mark} {task.name}"
-        _safe(stdscr, y, x, line1[:w], attr)
+        body_attr = curses.A_DIM | (curses.A_REVERSE if selected else 0)
+        body = task.description.strip() or task.evidence.strip()
+        if body:
+            excerpt = textwrap.wrap(body, width=max(8, w - 2), max_lines=2, placeholder=" …")
+        else:
+            excerpt = []
+        _safe(stdscr, y + 1, x + 1, (excerpt[0] if excerpt else "")[: w - 1], body_attr)
+        _safe(stdscr, y + 2, x + 1, (excerpt[1] if len(excerpt) > 1 else "")[: w - 1], body_attr)
 
-        sub = ""
+        parts: list[str] = []
         if task.depends_on:
-            sub = " deps:" + ",".join(f"#{i}" for i in task.depends_on[:4])
-            if len(task.depends_on) > 4:
-                sub += "…"
-        elif task.blockers:
-            sub = f" ext:{len(task.blockers)} blocker(s)"
-        sub_attr = curses.A_DIM | (curses.A_REVERSE if selected else 0)
-        _safe(stdscr, y + 1, x, sub[:w], sub_attr)
+            shown = ",".join(f"#{i}" for i in task.depends_on[:3])
+            parts.append("deps:" + shown + ("…" if len(task.depends_on) > 3 else ""))
+        if task.blockers:
+            parts.append(f"ext:{len(task.blockers)}")
+        if ready:
+            parts.append("ready")
+        meta_attr = (self.pairs["alert"] if blocked else curses.A_DIM)
+        if selected:
+            meta_attr |= curses.A_REVERSE
+        _safe(stdscr, y + 3, x + 1, " · ".join(parts)[: w - 1], meta_attr)
 
     def footer_text(self) -> str:
         task = self.selected()
@@ -252,6 +313,7 @@ class Board:
             self.shift(1)
         elif ch in (ord("r"), ord("R")):
             self.reload()
+            self.flash("reloaded")
         elif ch == ord("?"):
             self.help_popup(stdscr)
         elif ch == curses.KEY_RESIZE:
@@ -286,9 +348,11 @@ class Board:
         self.message = message  # shown in footer on next draw
 
     # --- popups (drawn on the shared stdscr; the main loop redraws the board after)
-    def _popup_geometry(self, lines: list[str], title: str, scr_h: int, scr_w: int):
-        text_w = max([len(title)] + [len(line) for line in lines]) + 4
-        w = max(30, min(text_w, scr_w - 2))
+    def _popup_geometry(self, lines, title: str, scr_h: int, scr_w: int):
+        longest = max(
+            [len(title)] + [len(l[0] if isinstance(l, tuple) else l) for l in lines] + [30]
+        )
+        w = max(30, min(longest + 4, scr_w - 2))
         h = min(len(lines) + 4, scr_h - 2)
         y = max(0, (scr_h - h) // 2)
         x = max(0, (scr_w - w) // 2)
@@ -301,26 +365,116 @@ class Board:
         return win
 
     def view_popup(self, stdscr, task: Task) -> None:
-        """Scrollable full-detail view."""
-        self._scroll_popup(stdscr, f"#{task.id} {task.name}",
-                           render.detail(task, self.by_id).splitlines())
+        """Scrollable, sectioned full-detail view."""
+        self._scroll_popup(stdscr, f"#{task.id} {task.name}", self._detail_lines(task))
 
     def help_popup(self, stdscr) -> None:
         self._scroll_popup(stdscr, "Help", _HELP.splitlines())
 
-    def _scroll_popup(self, stdscr, title: str, lines: list[str]) -> None:
+    # detail view content: list of (text, attr) or plain str lines.
+    # A line that is exactly "─" is drawn as a full-width separator.
+    def _detail_lines(self, task: Task) -> list:
+        dep_map = self.dep_status_map()
+        dim = curses.A_DIM
+        bold = curses.A_BOLD
+        status_attr = self.pairs.get(task.status, 0) | bold
+        alert = self.pairs["alert"]
+        good = self.pairs["done"]
+
+        def dep_line(dep_id: int, emphasis: bool):
+            dep = self.by_id.get(dep_id)
+            if dep is None:
+                return (f"  #{dep_id} (missing)", alert)
+            attr = dim if dep.status == DONE else (alert if emphasis else bold)
+            return (f"  #{dep.id} ({dep.status}) {dep.name}", attr)
+
+        lines: list = [
+            (f"{task.name}", bold),
+            (f"STATUS   {status_label(task.status)}", status_attr),
+            (f"PROJECT  {task.project}", dim),
+            "─",
+        ]
+
+        def section(title: str) -> None:
+            lines.append("")
+            lines.append((title, bold))
+
+        section("DESCRIPTION")
+        lines.extend("  " + l for l in (task.description.splitlines() if task.description else ["(none)"]))
+
+        section("EVIDENCE / PRE-TASK ANALYSIS")
+        lines.extend("  " + l for l in (task.evidence.splitlines() if task.evidence else ["(none)"]))
+
+        section("BLOCKERS (EXTERNAL)")
+        if task.blockers:
+            lines.extend((f"  • {b}", alert) for b in task.blockers)
+        else:
+            lines.append(("  (none)", dim))
+
+        section("DEPENDS ON")
+        if task.depends_on:
+            lines.extend(dep_line(i, emphasis=True) for i in task.depends_on)
+        else:
+            lines.append(("  (none)", dim))
+
+        section("AFFECTS")
+        if task.affects:
+            lines.extend(dep_line(i, emphasis=False) for i in task.affects)
+        else:
+            lines.append(("  (none)", dim))
+
+        section("BLOCKS (TASKS DEPENDING ON THIS)")
+        dependents = [t for t in self.tasks if task.id in t.depends_on and t.id != task.id]
+        if dependents:
+            lines.extend(dep_line(t.id, emphasis=True) for t in dependents)
+        else:
+            lines.append(("  (none)", dim))
+
+        lines.append("─")
+        if task.status == DONE:
+            lines.append(("STATE    done", good))
+        elif is_blocked(task, dep_map):
+            pending = unfinished_dep_ids(task, dep_map)
+            why = []
+            if pending:
+                why.append("deps " + ",".join(f"#{i}" for i in pending))
+            if task.blockers:
+                why.append(f"{len(task.blockers)} external blocker(s)")
+            lines.append(("STATE    BLOCKED — " + " + ".join(why), alert))
+        elif is_ready(task, dep_map):
+            lines.append(("STATE    ready to start", good))
+        else:
+            lines.append(("STATE    in flight", dim))
+        lines.append((f"created {task.created_at}  ·  updated {task.updated_at}", dim))
+        return lines
+
+    def _scroll_popup(self, stdscr, title: str, lines: list) -> None:
+        """lines: plain strings or (text, attr) tuples; '─' rows become separators."""
         height, width = stdscr.getmaxyx()
-        wrapped: list[str] = []
+        wrapped: list[tuple[str, int]] = []
         for line in lines:
-            wrapped.extend(textwrap.wrap(line, width=max(10, width - 8)) or [""])
+            if isinstance(line, tuple):
+                text, attr = line
+            else:
+                text, attr = line, 0
+            if text == "─":
+                wrapped.append(("SEPARATOR", attr))
+                continue
+            for part in textwrap.wrap(text, width=max(10, width - 8)) or [""]:
+                wrapped.append((part, attr))
         h, w, y, x = self._popup_geometry(wrapped, title, height, width)
         max_lines = max(1, h - 3)
         off = 0
         while True:
             win = self._draw_box(h, w, y, x, title)
             for i in range(max_lines):
-                line = wrapped[off + i] if off + i < len(wrapped) else ""
-                _safe(win, 1 + i, 2, line[: w - 3])
+                idx = off + i
+                if idx >= len(wrapped):
+                    break
+                text, attr = wrapped[idx]
+                if text == "SEPARATOR":
+                    text, attr = "─" * (w - 4), attr | curses.A_DIM
+                _safe(win, 1 + i, 2, text[: w - 3], attr)
             if off + max_lines < len(wrapped):
                 _safe(win, h - 1, 2, " ↓ more ", curses.A_DIM)
             _safe(win, h - 1, max(2, w - 22), " ↑↓ scroll  q close ", curses.A_DIM)

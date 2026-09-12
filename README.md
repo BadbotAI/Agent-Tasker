@@ -82,10 +82,13 @@ One SQLite file, WAL mode:
 | `Enter` | full task detail (scroll with arrows) |
 | `m` | move task (status menu) |
 | `<`/`,` and `>`/`.` | shift task one column left/right |
-| `r` | reload from db |
+| `r` | manual reload (the board also auto-reloads when the db changes) |
 | `?` / `q` | help / quit |
 
-`!` on a card = blocked; dimmed = done.
+Cards are 4 lines (name, description/evidence excerpt, deps/blockers/ready state),
+colored by status. `!` = blocked (red), `*` = ready, dimmed = done. The board watches
+the database file and its WAL side files, so changes from the CLI, MCP agents, or
+other TUI sessions appear within ~0.5s.
 
 ## MCP
 
