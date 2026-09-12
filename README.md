@@ -83,7 +83,7 @@ One SQLite file, WAL mode:
 | `m` | move task (status menu) |
 | `<`/`,` and `>`/`.` | shift task one column left/right |
 | `r` | manual reload (the board also auto-reloads when the db changes) |
-| `?` / `q` | help / quit |
+| `Enter` | full task detail — `↑↓` selects a field, `e` edits it, `q` closes |
 
 Cards are bordered mini-cards: a 2-line inverted title head in the status color,
 a rule, then a 4-line description/evidence body and a deps/blockers/ready meta

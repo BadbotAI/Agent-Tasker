@@ -41,7 +41,7 @@ _HELP = """\
 Board keys
   h / Left, l / Right    select column
   j / Down, k / Up       select task
-  Enter                  task details (scroll with arrows, q/Enter closes)
+  Enter                  task details (↑↓ select field · e: edit · q: close)
   m                      move task to another status (menu)
   < or ,  /  > or .      move task one column left / right
   r                      manual reload
@@ -395,73 +395,96 @@ class Board:
         return win
 
     def view_popup(self, stdscr, task: Task) -> None:
-        """Scrollable, sectioned full-detail view."""
-        self._scroll_popup(stdscr, f"#{task.id} {task.name}", self._detail_lines(task))
+        """Field-based task view: arrows select fields, 'e' edits, 'q' closes."""
+        stdscr.timeout(-1)  # blocking input while a popup is open
+        try:
+            self._view_loop(stdscr, task)
+        finally:
+            stdscr.timeout(WATCH_MS)
 
-    def help_popup(self, stdscr) -> None:
-        self._scroll_popup(stdscr, "Help", _HELP.splitlines())
+    def _view_loop(self, stdscr, task: Task) -> None:
+        sel, offset, message = 0, 0, ""
+        while True:
+            blocks = self._field_blocks(task)
+            sel = max(0, min(sel, len(blocks) - 1))
+            height, width = stdscr.getmaxyx()
+            disp: list[tuple[str, int, int]] = []  # (text, attr, block index)
+            for bi, b in enumerate(blocks):
+                attr = curses.A_BOLD | (curses.A_REVERSE if bi == sel else 0)
+                marker = "▸ " if bi == sel else "  "
+                disp.append((f"{marker}{b['label']}", attr, bi))
+                for text, a in b["lines"]:
+                    disp.append(("SEP" if text == "─" else f"  {text}", a, bi))
+                disp.append(("", 0, bi))
 
-    # detail view content: list of (text, attr) or plain str lines.
-    # A line that is exactly "─" is drawn as a full-width separator.
-    def _detail_lines(self, task: Task) -> list:
-        dep_map = self.dep_status_map()
+            title = f"{task.project}-{task.id}"
+            h, w, y, x = self._popup_geometry([d[0] for d in disp], title, height, width)
+            max_lines = max(1, h - 3)
+            sel_line = next(i for i, d in enumerate(disp) if d[2] == sel)
+            if sel_line < offset:
+                offset = sel_line
+            elif sel_line >= offset + max_lines:
+                offset = sel_line - max_lines + 1
+            offset = max(0, min(offset, max(0, len(disp) - max_lines)))
+
+            win = self._draw_box(h, w, y, x, title)
+            for i in range(max_lines):
+                idx = offset + i
+                if idx >= len(disp):
+                    break
+                text, attr, _ = disp[idx]
+                if text == "SEP":
+                    text, attr = "─" * (w - 6), attr | curses.A_DIM
+                _safe(win, 1 + i, 2, text[: w - 3], attr)
+            hint = f" ↑↓ field · e: edit · q: close{' · ' + message if message else ''}"
+            _safe(win, h - 1, 2, hint[: w - 3], curses.A_DIM)
+            win.noutrefresh()
+            curses.doupdate()
+
+            ch = stdscr.getch()
+            message = ""
+            if ch in (curses.KEY_UP, ord("k")):
+                sel = max(0, sel - 1)
+            elif ch in (curses.KEY_DOWN, ord("j")):
+                sel = min(len(blocks) - 1, sel + 1)
+            elif ch in (ord("e"), ord("E"), curses.KEY_ENTER, 10, 13):
+                block = blocks[sel]
+                if block["key"]:
+                    try:
+                        updated = self._edit_field(stdscr, task, block["key"])
+                        if updated is not None:
+                            task = updated
+                            self.reload()
+                            message = "saved"
+                    except TaskError as exc:
+                        message = f"error: {exc}"
+            elif ch in (ord("q"), ord("Q"), 27, curses.KEY_RESIZE):
+                return
+
+    def _field_blocks(self, task: Task) -> list[dict]:
         dim = curses.A_DIM
         bold = curses.A_BOLD
         status_attr = self.pairs.get(task.status, 0) | bold
         alert = self.pairs["alert"]
         good = self.pairs["done"]
+        dep_map = self.dep_status_map()
 
-        def dep_line(dep_id: int, emphasis: bool):
-            dep = self.by_id.get(dep_id)
-            if dep is None:
-                return (f"  #{dep_id} (missing)", alert)
-            attr = dim if dep.status == DONE else (alert if emphasis else bold)
-            return (f"  #{dep.id} ({dep.status}) {dep.name}", attr)
+        def dep_lines(ids, emphasis: bool):
+            out = []
+            for dep_id in ids:
+                dep = self.by_id.get(dep_id)
+                if dep is None:
+                    out.append((f"#{dep_id} (missing)", alert))
+                else:
+                    attr = dim if dep.status == DONE else (alert if emphasis else bold)
+                    out.append((f"#{dep.id} ({dep.status}) {dep.name}", attr))
+            return out or [("(none)", dim)]
 
-        lines: list = [
-            (f"STATUS   {status_label(task.status)}", status_attr),
-            (f"PROJECT  {task.project}", dim),
-            "─",
-        ]
+        def block(key, label, lines):
+            return {"key": key, "label": label, "lines": lines}
 
-        def section(title: str) -> None:
-            lines.append("")
-            lines.append((title, bold))
-
-        section("DESCRIPTION")
-        lines.extend("  " + l for l in (task.description.splitlines() if task.description else ["(none)"]))
-
-        section("EVIDENCE / PRE-TASK ANALYSIS")
-        lines.extend("  " + l for l in (task.evidence.splitlines() if task.evidence else ["(none)"]))
-
-        section("BLOCKERS (EXTERNAL)")
-        if task.blockers:
-            lines.extend((f"  • {b}", alert) for b in task.blockers)
-        else:
-            lines.append(("  (none)", dim))
-
-        section("DEPENDS ON")
-        if task.depends_on:
-            lines.extend(dep_line(i, emphasis=True) for i in task.depends_on)
-        else:
-            lines.append(("  (none)", dim))
-
-        section("AFFECTS")
-        if task.affects:
-            lines.extend(dep_line(i, emphasis=False) for i in task.affects)
-        else:
-            lines.append(("  (none)", dim))
-
-        section("BLOCKS (TASKS DEPENDING ON THIS)")
-        dependents = [t for t in self.tasks if task.id in t.depends_on and t.id != task.id]
-        if dependents:
-            lines.extend(dep_line(t.id, emphasis=True) for t in dependents)
-        else:
-            lines.append(("  (none)", dim))
-
-        lines.append("─")
         if task.status == DONE:
-            lines.append(("STATE    done", good))
+            state = ("done", good)
         elif is_blocked(task, dep_map):
             pending = unfinished_dep_ids(task, dep_map)
             why = []
@@ -469,16 +492,129 @@ class Board:
                 why.append("deps " + ",".join(f"#{i}" for i in pending))
             if task.blockers:
                 why.append(f"{len(task.blockers)} external blocker(s)")
-            lines.append(("STATE    BLOCKED — " + " + ".join(why), alert))
+            state = ("BLOCKED — " + " + ".join(why), alert)
         elif is_ready(task, dep_map):
-            lines.append(("STATE    ready to start", good))
+            state = ("ready to start", good)
         else:
-            lines.append(("STATE    in flight", dim))
-        lines.append((f"created {task.created_at}  ·  updated {task.updated_at}", dim))
-        return lines
+            state = ("in flight", dim)
+        dependents = [t for t in self.tasks if task.id in t.depends_on and t.id != task.id]
+
+        return [
+            block("name", "TITLE", [(task.name, 0)]),
+            block("status", "STATUS", [(status_label(task.status), status_attr)]),
+            block(None, "PROJECT", [(task.project, dim)]),
+            block("description", "DESCRIPTION",
+                  [("─", 0)] + [(l, 0) for l in (task.description.splitlines() or ["(none)"])]),
+            block("evidence", "EVIDENCE / PRE-TASK ANALYSIS",
+                  [(l, 0) for l in (task.evidence.splitlines() or ["(none)"])]),
+            block("blockers", "BLOCKERS (EXTERNAL)",
+                  [(f"• {b}", alert) for b in task.blockers] or [("(none)", dim)]),
+            block("depends_on", "DEPENDS ON", dep_lines(task.depends_on, True)),
+            block("affects", "AFFECTS", dep_lines(task.affects, False)),
+            block(None, "BLOCKS (TASKS DEPENDING ON THIS)", dep_lines([t.id for t in dependents], True)),
+            block(None, "STATE", [("─", 0), state]),
+            block(None, "DATES", [(f"created {task.created_at}  ·  updated {task.updated_at}", dim)]),
+        ]
+
+    # --- field editors
+    def _edit_field(self, stdscr, task: Task, key: str) -> Task | None:
+        """Edit one field. Returns the updated task, or None if cancelled."""
+        if key == "status":
+            options = [status_label(s) for s in STATUSES]
+            idx = self._menu(stdscr, "Set status", options, STATUSES.index(task.status))
+            if idx is None:
+                return None
+            return self.store.set_status(task, STATUSES[idx])
+        if key == "name":
+            value = self._input_box(stdscr, "Title", task.name)
+            if value is None or not value.strip():
+                return None
+            return self.store.update(task, name=value.strip())
+        if key in ("depends_on", "affects"):
+            labels = {
+                "depends_on": "Depends on (comma-separated refs, empty clears)",
+                "affects": "Affects (comma-separated refs, empty clears)",
+            }
+            current = ", ".join(f"#{i}" for i in getattr(task, key))
+            value = self._input_box(stdscr, labels[key], current)
+            if value is None:
+                return None
+            refs = [r.strip() for r in value.split(",") if r.strip()]
+            return self.store.update(task, **{key: refs})
+        if key == "blockers":
+            text = self._edit_in_editor("\n".join(task.blockers))
+            if text is None:
+                return None
+            return self.store.update(task, blockers=[l.strip() for l in text.splitlines() if l.strip()])
+        if key in ("description", "evidence"):
+            text = self._edit_in_editor(getattr(task, key))
+            if text is None:
+                return None
+            return self.store.update(task, **{key: text.rstrip("\n")})
+        return None
+
+    def _input_box(self, stdscr, title: str, initial: str = "") -> str | None:
+        """Single-line input popup. Enter accepts, Esc cancels."""
+        height, width = stdscr.getmaxyx()
+        w = min(max(40, len(initial) + 12), width - 2)
+        h = 5
+        y, x = max(0, (height - h) // 2), max(0, (width - w) // 2)
+        value = initial
+        while True:
+            win = self._draw_box(h, w, y, x, title)
+            shown = value if len(value) <= w - 6 else "…" + value[-(w - 7):]
+            _safe(win, 1, 2, shown[: w - 3])
+            _safe(win, h - 1, 2, " Enter save · Esc cancel ", curses.A_DIM)
+            win.noutrefresh()
+            curses.doupdate()
+            ch = stdscr.getch()
+            if ch in (10, 13, curses.KEY_ENTER):
+                return value
+            if ch == 27:
+                return None
+            if ch in (curses.KEY_BACKSPACE, 127, 8):
+                value = value[:-1]
+            elif 32 <= ch < 127:
+                value += chr(ch)
+
+    def _edit_in_editor(self, text: str) -> str | None:
+        """Edit text in $VISUAL/$EDITOR: suspend curses, run, resume."""
+        import shlex
+        import subprocess
+        import tempfile
+
+        fd, path = tempfile.mkstemp(prefix="agenttasker-", suffix=".md")
+        os.close(fd)
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
+            try:
+                curses.def_prog_mode()
+                curses.endwin()
+                subprocess.run(shlex.split(editor) + [path], check=False)
+            finally:
+                curses.reset_prog_mode()
+            with open(path, encoding="utf-8") as fh:
+                return fh.read()
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    def help_popup(self, stdscr) -> None:
+        self._scroll_popup(stdscr, "Help", _HELP.splitlines())
 
     def _scroll_popup(self, stdscr, title: str, lines: list) -> None:
         """lines: plain strings or (text, attr) tuples; '─' rows become separators."""
+        stdscr.timeout(-1)
+        try:
+            self._scroll_loop(stdscr, title, lines)
+        finally:
+            stdscr.timeout(WATCH_MS)
+
+    def _scroll_loop(self, stdscr, title: str, lines: list) -> None:
         height, width = stdscr.getmaxyx()
         wrapped: list[tuple[str, int]] = []
         for line in lines:
@@ -519,6 +655,13 @@ class Board:
 
     def _menu(self, stdscr, title: str, options: list[str], current: int) -> int | None:
         """Arrow-select popup. Returns chosen index, or None on cancel."""
+        stdscr.timeout(-1)
+        try:
+            return self._menu_loop(stdscr, title, options, current)
+        finally:
+            stdscr.timeout(WATCH_MS)
+
+    def _menu_loop(self, stdscr, title: str, options: list[str], current: int) -> int | None:
         sel = current
         height, width = stdscr.getmaxyx()
         h, w, y, x = self._popup_geometry(options, title, height, width)
