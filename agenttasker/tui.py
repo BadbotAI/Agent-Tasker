@@ -262,7 +262,7 @@ class Board:
             title_lines.append("")
 
         # body: description/evidence excerpt (4 lines) + deps/blockers/ready meta
-        body_attr = curses.A_DIM | (curses.A_REVERSE if selected else 0)
+        body_attr = curses.A_REVERSE if selected else 0  # full-contrast body text
         body = task.description.strip() or task.evidence.strip()
         excerpt = (
             textwrap.wrap(body, width=inner, max_lines=4, placeholder=" …") if body else []
@@ -277,7 +277,7 @@ class Board:
             parts.append(f"ext:{len(task.blockers)}")
         if ready:
             parts.append("ready")
-        meta_attr = (self.pairs["alert"] if blocked else curses.A_DIM)
+        meta_attr = self.pairs["alert"] if blocked else 0
         if selected:
             meta_attr |= curses.A_REVERSE
 
