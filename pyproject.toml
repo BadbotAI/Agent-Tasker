@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agenttasker"
+version = "0.1.0"
+description = "Local-first, project-namespaced task tracker for AI agents and humans (CLI + TUI + MCP)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["tasks", "agent", "kanban", "mcp", "tui", "cli"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Environment :: Console :: Curses",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX",
+]
+
+dependencies = []
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.2.0"]
+
+[project.scripts]
+agenttasker = "agenttasker.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["agenttasker"]
