@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json as jsonlib
+import os
 import sys
 from collections import Counter
 from typing import Sequence
@@ -57,8 +58,10 @@ def _comma_list(values: Sequence[str] | None) -> list[str]:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    invoked = os.path.basename(sys.argv[0])
+    prog = "python -m agenttasker" if invoked == "__main__.py" else invoked
     parser = argparse.ArgumentParser(
-        prog="agenttasker",
+        prog=prog,
         description="Local, project-namespaced task tracker for agents and humans.",
         epilog=_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,

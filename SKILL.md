@@ -64,6 +64,8 @@ decide deliberately whether they stay parked.
 
 ## CLI reference
 
+Both `agenttasker` and the short alias `atx` invoke the same tool; examples use
+`agenttasker` for clarity.
 ```
 agenttasker add "Name" [-d DESC] [-s STATUS] [-e EVIDENCE] [--blocker TEXT]... [--dep REF]... [--affects REF]...
 agenttasker ls [-s STATUS]... [--search TEXT] [--ready] [--blocked] [-a] [--json]

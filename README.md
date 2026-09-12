@@ -33,6 +33,7 @@ dependency is unfinished or any external blocker is open.
 python3 -m venv .venv && .venv/bin/pip install -e '.[mcp]'   # [mcp] only needed for the MCP server
 ```
 
+Installs two equivalent commands: `agenttasker` and the short alias `atx`.
 Or standalone: `pipx install 'agenttasker[mcp]'` (once published / from a checkout:
 `pipx install '/path/to/AgentTasker[mcp]'`).
 
