@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -23,6 +26,14 @@ STATUSES: tuple[str, ...] = (
 )
 DEFERRED, BACKLOG, TODO, IN_PROGRESS, IN_REVIEW, DONE = STATUSES
 STARTABLE_STATUSES = (BACKLOG, TODO)
+
+# Priority levels: 0 is highest.
+PRIORITIES: tuple[int, ...] = (0, 1, 2, 3)
+DEFAULT_PRIORITY = 2
+PRIORITY_LABELS = ("P0", "P1", "P2", "P3")
+
+EXPORT_FORMAT = "agenttasker-export"
+EXPORT_VERSION = 1
 
 _STATUS_ALIASES = {
     "inprogress": IN_PROGRESS,
@@ -52,6 +63,43 @@ def status_label(status: str) -> str:
         "in_review": "In Review",
         "done": "Done",
     }.get(status, status)
+
+
+def priority_label(priority: int) -> str:
+    return PRIORITY_LABELS[priority] if 0 <= priority < len(PRIORITY_LABELS) else str(priority)
+
+
+def normalize_priority(value) -> int:
+    """Accept 'P0'/'p1'/'2'/2 -> int priority (0=highest .. 3)."""
+    text = str(value).strip().upper().lstrip("P")
+    if not text.isdigit() or int(text) not in PRIORITIES:
+        raise TaskError(f"unknown priority {value!r}; expected one of: {', '.join(PRIORITY_LABELS)}")
+    return int(text)
+
+
+def parse_tags(values: Iterable[str]) -> list[str]:
+    """Flatten repeatable tag flags (each may be comma-separated) preserving order."""
+    out: list[str] = []
+    for value in values:
+        for part in str(value).split(","):
+            part = part.strip().lstrip("#")
+            if part and part not in out:
+                out.append(part)
+    return out
+
+
+def claim_age_hours(task: "Task", now: datetime | None = None) -> float | None:
+    """Hours since the claim was taken, or None when unclaimed/unparseable."""
+    if not task.claimed_at:
+        return None
+    try:
+        claimed = datetime.fromisoformat(task.claimed_at)
+    except ValueError:
+        return None
+    now = now or datetime.now(timezone.utc)
+    if claimed.tzinfo is None:
+        claimed = claimed.replace(tzinfo=timezone.utc)
+    return (now - claimed).total_seconds() / 3600.0
 
 
 def utcnow() -> str:
@@ -184,6 +232,10 @@ class Task:
     blockers: list[str] = field(default_factory=list)   # free-form external blockers
     depends_on: list[int] = field(default_factory=list)  # hard deps: task ids
     affects: list[int] = field(default_factory=list)     # informational: task ids
+    owner: str = ""                                      # claim holder ('' = unclaimed)
+    claimed_at: str = ""
+    priority: int = DEFAULT_PRIORITY
+    tags: list[str] = field(default_factory=list)        # workstream / labels
     created_at: str = ""
     updated_at: str = ""
 
@@ -199,6 +251,10 @@ class Task:
             blockers=_decode_list(row["blockers"]),
             depends_on=_decode_list(row["depends_on"]),
             affects=_decode_list(row["affects"]),
+            owner=row["owner"],
+            claimed_at=row["claimed_at"],
+            priority=row["priority"] if isinstance(row["priority"], int) else DEFAULT_PRIORITY,
+            tags=_decode_list(row["tags"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -210,6 +266,10 @@ class Task:
             "project": self.project,
             "name": self.name,
             "status": self.status,
+            "priority": self.priority,
+            "tags": list(self.tags),
+            "owner": self.owner,
+            "claimed_at": self.claimed_at,
             "description": self.description,
             "evidence": self.evidence,
             "blockers": list(self.blockers),
@@ -221,8 +281,10 @@ class Task:
 
 
 # --- store -------------------------------------------------------------------
-
-_UPDATABLE = ("name", "status", "description", "evidence", "blockers", "depends_on", "affects")
+_UPDATABLE = (
+    "name", "status", "description", "evidence", "blockers",
+    "depends_on", "affects", "priority", "tags",
+)
 
 
 class Store:
@@ -255,21 +317,26 @@ class Store:
         blockers: Sequence[str] = (),
         depends_on: Sequence[str | int] = (),
         affects: Sequence[str | int] = (),
+        priority=DEFAULT_PRIORITY,
+        tags: Sequence[str] = (),
     ) -> Task:
         name = name.strip()
         if not name:
             raise TaskError("task name must not be empty")
         status = normalize_status(status)
+        priority = normalize_priority(priority)
         deps = self._validate_refs(project, depends_on)
         links = self._validate_refs(project, affects)
         now = utcnow()
         cur = self.db.execute(
             "INSERT INTO tasks (project, name, status, description, evidence, blockers,"
-            " depends_on, affects, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            " depends_on, affects, owner, claimed_at, priority, tags,"
+            " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 project, name, status, description, evidence,
                 json.dumps([str(b).strip() for b in blockers if str(b).strip()]),
-                json.dumps(deps), json.dumps(links), now, now,
+                json.dumps(deps), json.dumps(links),
+                "", "", priority, json.dumps(parse_tags(tags)), now, now,
             ),
         )
         self.db.commit()
@@ -296,6 +363,9 @@ class Store:
         *,
         statuses: Sequence[str] | None = None,
         search: str | None = None,
+        priorities: Sequence[int] | None = None,
+        tags: Sequence[str] | None = None,
+        stale_hours: float | None = None,
     ) -> list[Task]:
         query = "SELECT * FROM tasks"
         conds: list[str] = []
@@ -307,16 +377,32 @@ class Store:
             wanted = [normalize_status(s) for s in statuses]
             conds.append(f"status IN ({','.join('?' * len(wanted))})")
             args.extend(wanted)
+        if priorities:
+            wanted_p = [normalize_priority(p) for p in priorities]
+            conds.append(f"priority IN ({','.join('?' * len(wanted_p))})")
+            args.extend(wanted_p)
+        if tags:
+            for tag in tags:
+                conds.append("tags LIKE ?")
+                args.append(f'%"{tag.replace("%", "")}"%')
         if search:
             for term in search.split():
-                conds.append("(name LIKE ? OR description LIKE ? OR evidence LIKE ?)")
+                conds.append("(name LIKE ? OR description LIKE ? OR evidence LIKE ? OR tags LIKE ?)")
                 like = f"%{term}%"
-                args.extend([like, like, like])
+                args.extend([like, like, like, like])
+        if stale_hours is not None:
+            conds.append("owner != ''")
         if conds:
             query += " WHERE " + " AND ".join(conds)
         rows = self.db.execute(query, args).fetchall()
         tasks = [Task.from_row(r) for r in rows]
-        tasks.sort(key=lambda t: (STATUSES.index(t.status), t.id))
+        # board order, then priority (P0 first), then age
+        tasks.sort(key=lambda t: (STATUSES.index(t.status), t.priority, t.id))
+        if stale_hours is not None:
+            tasks = [
+                t for t in tasks
+                if (age := claim_age_hours(t)) is not None and age >= stale_hours
+            ]
         return tasks
 
     def update(self, task: Task, **changes) -> Task:
@@ -330,11 +416,15 @@ class Store:
                 raise TaskError("task name must not be empty")
         if "status" in values:
             values["status"] = normalize_status(values["status"])
+        if "priority" in values:
+            values["priority"] = normalize_priority(values["priority"])
         for key in ("depends_on", "affects"):
             if key in values:
                 values[key] = self._validate_refs(task.project, values[key], exclude_self=task.id)
         if "blockers" in values:
             values["blockers"] = [str(b).strip() for b in values["blockers"] if str(b).strip()]
+        if "tags" in values:
+            values["tags"] = parse_tags(values["tags"])
         if not values:
             raise TaskError("nothing to update")
         values["updated_at"] = utcnow()
@@ -348,11 +438,98 @@ class Store:
         assert updated is not None
         return updated
 
+    def append_evidence(self, task: Task, text: str) -> Task:
+        """Atomically append a timestamped evidence line (SQL-side concat; safe
+        against concurrent writers, unlike read-then-replace)."""
+        text = text.strip()
+        if not text:
+            raise TaskError("evidence text must not be empty")
+        stamp = utcnow().replace("+00:00", "Z")
+        separator = "" if not task.evidence.strip() else "\n\n"
+        self.db.execute(
+            "UPDATE tasks SET evidence = evidence || ?, updated_at=? WHERE project=? AND id=?",
+            (f"{separator}[{stamp}] {text}", utcnow(), task.project, task.id),
+        )
+        self.db.commit()
+        updated = self.get_by_id(task.project, task.id)
+        assert updated is not None
+        return updated
+
     def set_status(self, task: Task, status: str) -> Task:
         return self.update(task, status=normalize_status(status))
 
+    # --- atomic ownership ----------------------------------------------------
+    def claim(self, task: Task, owner: str, *, force: bool = False) -> Task:
+        """Atomically take ownership (also moves to in_progress). Refuses if
+        another owner holds the claim, unless force."""
+        owner = owner.strip()
+        if not owner:
+            raise TaskError("owner name must not be empty")
+        now = utcnow()
+        cur = self.db.execute(
+            "UPDATE tasks SET owner=?, claimed_at=?, status=?, updated_at=?"
+            " WHERE project=? AND id=? AND (owner='' OR owner=? OR ?)",
+            (owner, now, IN_PROGRESS, now, task.project, task.id, owner, int(force)),
+        )
+        self.db.commit()
+        if cur.rowcount == 0:
+            fresh = self.get_by_id(task.project, task.id)
+            holder = fresh.owner if fresh else "?"
+            raise TaskError(
+                f"{display_ref(task.project, task.id)} already claimed by {holder!r}"
+                f" (since {(fresh.claimed_at if fresh else '?')}); use --force to take it"
+            )
+        updated = self.get_by_id(task.project, task.id)
+        assert updated is not None
+        return updated
+
+    def release(self, task: Task, *, owner: str | None = None, force: bool = False) -> Task:
+        """Clear the claim. Succeeds when unclaimed, or when `owner` matches the
+        holder, or with force."""
+        cur = self.db.execute(
+            "UPDATE tasks SET owner='', claimed_at='', updated_at=?"
+            " WHERE project=? AND id=? AND (owner='' OR owner=? OR ?)",
+            (utcnow(), task.project, task.id, owner or "", int(force)),
+        )
+        self.db.commit()
+        if cur.rowcount == 0:
+            fresh = self.get_by_id(task.project, task.id)
+            holder = fresh.owner if fresh else "?"
+            raise TaskError(
+                f"{display_ref(task.project, task.id)} is claimed by {holder!r};"
+                " release with the matching --owner or --force"
+            )
+        updated = self.get_by_id(task.project, task.id)
+        assert updated is not None
+        return updated
+
+    def handoff(self, task: Task, new_owner: str, *, from_owner: str = "", force: bool = False) -> Task:
+        """Atomically transfer the claim to new_owner. Requires from_owner to be
+        the current holder (or force)."""
+        new_owner = new_owner.strip()
+        if not new_owner:
+            raise TaskError("owner name must not be empty")
+        now = utcnow()
+        cur = self.db.execute(
+            "UPDATE tasks SET owner=?, claimed_at=?, updated_at=?"
+            " WHERE project=? AND id=? AND (owner='' OR owner=? OR ?)",
+            (new_owner, now, now, task.project, task.id, from_owner.strip(), int(force)),
+        )
+        self.db.commit()
+        if cur.rowcount == 0:
+            fresh = self.get_by_id(task.project, task.id)
+            holder = fresh.owner if fresh else "?"
+            raise TaskError(
+                f"{display_ref(task.project, task.id)} is claimed by {holder!r};"
+                " handoff requires the current owner (or --force)"
+            )
+        updated = self.get_by_id(task.project, task.id)
+        assert updated is not None
+        return updated
+
     def delete(self, task: Task) -> list[str]:
-        """Delete a task and scrub references to it from other tasks' dep/affect lists."""
+        """Delete a task, its attachments, and scrub refs in other tasks."""
+        self.delete_task_files(task)
         self.db.execute("DELETE FROM tasks WHERE id=?", (task.id,))
         notes: list[str] = []
         for other in self.list_tasks(task.project):
@@ -428,3 +605,243 @@ class Store:
             for t in self.list_tasks(task.project)
             if task.id in t.depends_on and t.id != task.id
         ]
+
+    # --- attachments -----------------------------------------------------------
+    # Files live on disk under <db_dir>/attachments/<project>/<task_id>/<hash>-<name>,
+    # content-addressed by sha256; the table holds the metadata.
+
+    def attachments_dir(self) -> Path:
+        return self.path.parent / "attachments"
+
+    def add_attachment(self, task: Task, source: str | Path, *, filename: str | None = None) -> dict:
+        source = Path(source).expanduser()
+        if not source.is_file():
+            raise TaskError(f"attachment file not found: {source}")
+        data = source.read_bytes()
+        return self.add_attachment_bytes(task, filename or source.name, data)
+
+    def add_attachment_bytes(self, task: Task, filename: str, data: bytes) -> dict:
+        filename = str(filename).strip() or "attachment"
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", filename).strip("._") or "attachment"
+        digest = hashlib.sha256(data).hexdigest()
+        relpath = f"{task.project}/{task.id}/{digest[:12]}-{safe}"
+        target = self.attachments_dir() / relpath
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        cur = self.db.execute(
+            "INSERT INTO attachments (project, task_id, filename, relpath, size, sha256, created_at)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (task.project, task.id, filename, relpath, len(data), digest, utcnow()),
+        )
+        self.db.commit()
+        return {
+            "id": cur.lastrowid,
+            "filename": filename,
+            "path": str(target),
+            "size": len(data),
+            "sha256": digest,
+        }
+
+    def list_attachments(self, task: Task) -> list[dict]:
+        rows = self.db.execute(
+            "SELECT * FROM attachments WHERE project=? AND task_id=? ORDER BY id",
+            (task.project, task.id),
+        ).fetchall()
+        return [
+            {
+                "id": r["id"],
+                "filename": r["filename"],
+                "path": str(self.attachments_dir() / r["relpath"]),
+                "size": r["size"],
+                "sha256": r["sha256"],
+                "created_at": r["created_at"],
+            }
+            for r in rows
+        ]
+
+    def read_attachment_bytes(self, task: Task, attachment_id: int) -> bytes:
+        row = self.db.execute(
+            "SELECT * FROM attachments WHERE project=? AND task_id=? AND id=?",
+            (task.project, task.id, attachment_id),
+        ).fetchone()
+        if row is None:
+            raise TaskError(f"no attachment #{attachment_id} on {display_ref(task.project, task.id)}")
+        return (self.attachments_dir() / row["relpath"]).read_bytes()
+
+    def remove_attachment(self, task: Task, attachment_id: int, *, missing_ok: bool = False) -> str:
+        row = self.db.execute(
+            "SELECT * FROM attachments WHERE project=? AND task_id=? AND id=?",
+            (task.project, task.id, attachment_id),
+        ).fetchone()
+        if row is None:
+            if missing_ok:
+                return ""
+            raise TaskError(f"no attachment #{attachment_id} on {display_ref(task.project, task.id)}")
+        self.db.execute("DELETE FROM attachments WHERE id=?", (row["id"],))
+        self.db.commit()
+        path = self.attachments_dir() / row["relpath"]
+        if path.is_file():
+            still_used = self.db.execute(
+                "SELECT 1 FROM attachments WHERE relpath=? LIMIT 1", (row["relpath"],)
+            ).fetchone()
+            if still_used is None:
+                path.unlink(missing_ok=True)
+        return row["filename"]
+
+    def delete_task_files(self, task: Task) -> None:
+        """Drop all attachments for a task (called from delete)."""
+        for att in self.list_attachments(task):
+            self.remove_attachment(task, att["id"], missing_ok=True)
+
+    # --- export / import --------------------------------------------------------
+
+    def export_tasks(
+        self, project: str | None = None, *, include_attachments: bool = True
+    ) -> dict:
+        """Portable, versioned snapshot. Dependencies are exported as local ids;
+        attachments are embedded base64-encoded (sha256-verified on import)."""
+        import base64
+
+        tasks_out = []
+        for task in self.list_tasks(project):
+            data = task.to_dict()
+            data["local_id"] = task.id
+            if include_attachments:
+                data["attachments"] = [
+                    {
+                        "filename": att["filename"],
+                        "size": att["size"],
+                        "sha256": att["sha256"],
+                        "content_b64": base64.b64encode(
+                            self.read_attachment_bytes(task, att["id"])
+                        ).decode("ascii"),
+                    }
+                    for att in self.list_attachments(task)
+                ]
+            tasks_out.append(data)
+        return {
+            "format": EXPORT_FORMAT,
+            "version": EXPORT_VERSION,
+            "exported_at": utcnow(),
+            "tasks": tasks_out,
+        }
+
+    def import_tasks(
+        self, payload: dict, *, mode: str = "merge", dry_run: bool = False
+    ) -> dict:
+        """Import an export. Tasks whose (project, name) already exist are kept
+        (their id is reused so dependency links still resolve); everything else is
+        created with fresh ids and refs remapped. Returns a report."""
+        import base64
+
+        if not isinstance(payload, dict) or payload.get("format") != EXPORT_FORMAT:
+            raise TaskError("not an agenttasker export (missing format marker)")
+        version = payload.get("version")
+        if version != EXPORT_VERSION:
+            raise TaskError(f"unsupported export version {version!r} (expected {EXPORT_VERSION})")
+        if mode not in ("merge", "replace"):
+            raise TaskError(f"unknown import mode {mode!r} (expected merge or replace)")
+        incoming = payload.get("tasks")
+        if not isinstance(incoming, list):
+            raise TaskError("export has no task list")
+
+        report = {"created": [], "existing": [], "warnings": [], "mode": mode, "dry_run": dry_run}
+        try:
+            if mode == "replace":
+                projects = sorted({t.get("project", "") for t in incoming})
+                for existing_task in [
+                    t for t in self.list_tasks(None) if t.project in projects
+                ]:
+                    if not dry_run:
+                        self.delete(existing_task)
+                    report["warnings"].append(
+                        f"replace: deleted {display_ref(existing_task.project, existing_task.id)}"
+                        f" ({existing_task.name})"
+                    )
+
+            existing_by_name = {
+                (t.project, t.name): t for t in self.list_tasks(None)
+            }
+            id_map: dict[tuple[str, int], int] = {}  # (project, export local id) -> db id
+            for item in incoming:
+                prj = item.get("project", "")
+                old_id = item.get("local_id", item.get("id"))
+                name = str(item.get("name", "")).strip()
+                if not name:
+                    report["warnings"].append("skipped task without a name")
+                    continue
+                match = existing_by_name.get((prj, name))
+                if match is not None and not (mode == "replace" and dry_run):
+                    id_map[(prj, old_id)] = match.id
+                    report["existing"].append(f"{display_ref(prj, match.id)} {name} (kept)")
+                    continue
+                if dry_run:
+                    report["created"].append(f"{prj}-? {name} (would create)")
+                    id_map[(prj, old_id)] = -1
+                    continue
+                created = self.add_task(
+                    prj, name,
+                    description=item.get("description", ""),
+                    status=item.get("status", BACKLOG),
+                    evidence=item.get("evidence", ""),
+                    blockers=item.get("blockers", []),
+                    priority=item.get("priority", DEFAULT_PRIORITY),
+                    tags=item.get("tags", []),
+                )
+                if item.get("owner"):
+                    self.db.execute(
+                        "UPDATE tasks SET owner=?, claimed_at=? WHERE project=? AND id=?",
+                        (item["owner"], item.get("claimed_at", ""), prj, created.id),
+                    )
+                id_map[(prj, old_id)] = created.id
+                report["created"].append(f"{display_ref(prj, created.id)} {name}")
+
+            # second pass: remap relationships onto created tasks
+            for item in incoming:
+                prj = item.get("project", "")
+                old_id = item.get("local_id", item.get("id"))
+                new_id = id_map.get((prj, old_id))
+                if not new_id or new_id < 0:
+                    continue
+                task = self.get_by_id(prj, new_id)
+                if task is None:
+                    continue
+
+                def remap(ids):
+                    out = []
+                    for ref in ids or []:
+                        mapped = id_map.get((prj, ref))
+                        if mapped is None or mapped < 0:
+                            report["warnings"].append(
+                                f"{display_ref(prj, new_id)}: dropped unresolvable ref to old #{ref}"
+                            )
+                        elif mapped not in out:
+                            out.append(mapped)
+                    return out
+
+                deps = remap(item.get("depends_on"))
+                links = remap(item.get("affects"))
+                # compare against the created task's CURRENT refs, not the export's
+                # (an old id can coincidentally equal the new one)
+                if deps != task.depends_on or links != task.affects:
+                    if not dry_run:
+                        self.update(task, depends_on=deps, affects=links)
+
+                for att in item.get("attachments", []) or []:
+                    if dry_run:
+                        continue
+                    data = base64.b64decode(att.get("content_b64", ""))
+                    digest = hashlib.sha256(data).hexdigest()
+                    if att.get("sha256") and digest != att["sha256"]:
+                        report["warnings"].append(
+                            f"{display_ref(prj, new_id)}: attachment {att.get('filename')!r}"
+                            " failed sha256 check; skipped"
+                        )
+                        continue
+                    self.add_attachment_bytes(task, att.get("filename", "attachment"), data)
+
+            self.db.commit()
+            return report
+        except TaskError:
+            self.db.rollback()
+            raise

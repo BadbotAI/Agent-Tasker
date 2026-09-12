@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from .core import (
     DONE,
+    DEFAULT_PRIORITY,
     Task,
+    claim_age_hours,
     display_ref,
     is_blocked,
     is_ready,
+    priority_label,
     status_label,
     unfinished_dep_ids,
 )
@@ -24,10 +27,30 @@ def _dep_label(dep_id: int, by_id: dict[int, Task]) -> str:
     return f"#{dep.id} ({dep.status}) {dep.name}"
 
 
+def _owner_flag(task: Task) -> str:
+    if not task.owner:
+        return ""
+    age = claim_age_hours(task)
+    if age is None:
+        return f"@{task.owner}"
+    if age < 1:
+        span = f"{int(age * 60)}m"
+    elif age < 48:
+        span = f"{age:.0f}h"
+    else:
+        span = f"{age / 24:.0f}d"
+    return f"@{task.owner} {span}"
+
+
 def task_line(task: Task, by_id: dict[int, Task], show_project: bool = False) -> str:
-    """One-line board summary: '#12 in_progress  Fix login  [blocked deps:#10 ext:1]'."""
+    """One-line board summary: '#12 in_progress Fix login [P1 @agent 2h] [blocked ...]'."""
     prefix = f"{task.project}/" if show_project else ""
     flags: list[str] = []
+    if task.priority != DEFAULT_PRIORITY:
+        flags.append(priority_label(task.priority))
+    owner = _owner_flag(task)
+    if owner:
+        flags.append(owner)
     if task.status != DONE:
         dep_map = {t.id: t.status for t in by_id.values()}
         pending = unfinished_dep_ids(task, dep_map)
@@ -35,7 +58,7 @@ def task_line(task: Task, by_id: dict[int, Task], show_project: bool = False) ->
             flags.append("deps:" + ",".join(f"#{i}" for i in pending))
         if task.blockers:
             flags.append(f"ext:{len(task.blockers)}")
-        if not flags and is_ready(task, dep_map):
+        if not pending and not task.blockers and is_ready(task, dep_map):
             flags.append("ready")
     flag_text = f"  [{' '.join(flags)}]" if flags else ""
     return f"{prefix}#{task.id:<4} {task.status:<11} {task.name}{flag_text}"
@@ -46,8 +69,12 @@ def detail(task: Task, by_id: dict[int, Task]) -> str:
     lines: list[str] = [
         f"{display_ref(task.project, task.id)}  {task.name}",
         f"Status:   {status_label(task.status)}",
-        f"Project:  {task.project}",
+        f"Priority: {priority_label(task.priority)}",
+        f"Tags:     {', '.join(task.tags) if task.tags else '(none)'}",
     ]
+    owner = _owner_flag(task)
+    lines.append(f"Owner:    {owner if owner else 'unclaimed'}")
+    lines.append(f"Project:  {task.project}")
     dep_map = {t.id: t.status for t in by_id.values()}
 
     if task.description:

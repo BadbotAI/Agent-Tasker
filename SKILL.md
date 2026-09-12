@@ -15,18 +15,23 @@ humans can use the same CLI or the TUI (`agenttasker board`).
 
 **Why you use it:** conversations forget; the board doesn't. Anything that spans more
 than one step, or that you might hand off later, belongs on the board — not in your head.
+Agents and humans share one board via the CLI/MCP tools and the TUI (`agenttasker board`).
 
 ## Model
 
 - **Statuses** (board order): `deferred → backlog → todo → in_progress → in_review → done`
 - **Task fields**: name, description, `evidence` (analysis recorded *before* starting),
   `blockers` (free-text external impediments, e.g. "waiting on vendor key"),
-  `depends_on` (task ids that must be `done` first), `affects` (task ids this work touches).
+  `depends_on` (task ids that must be `done` first), `affects` (task ids this work touches),
+  `priority` (`P0` urgent … `P3` low, default `P2`), `tags` (workstream labels),
+  `owner` (atomic claim), attachments (any binary, stored sha256-addressed).
 - **Refs**: `12` or `ProjectName-12` within the current project.
 - **Derived state**:
-  - *ready* = status `backlog`/`todo` AND no blockers AND all `depends_on` are `done`.
+  - *ready* = status `backlog`/`todo` AND unclaimed-or-yours AND no blockers AND all `depends_on` are `done`.
   - *blocked* = not `done` AND (unfinished dependency OR open external blocker).
+  - Listings sort by status, then priority (P0 first) — `ls --ready` answers "what next?".
 - **Storage**: `$AGENTTASKER_DB` or `~/.local/share/agenttasker/tasks.db` (SQLite, WAL — safe for concurrent agents).
+  Attachments live beside it under `attachments/`, content-addressed by sha256.
 
 ## Non-negotiable rules
 
@@ -34,7 +39,9 @@ than one step, or that you might hand off later, belongs on the board — not in
    step before starting. If a step will take real thought, it is a task.
 2. **Evidence before execution.** Record pre-task analysis (files read, approach chosen,
    constraints found) in `evidence` BEFORE moving anything to `in_progress`.
-3. **Claim it.** `set_status <ref> in_progress` when you start; exactly one agent per task.
+3. **Claim before you work.** `claim_task <ref> --owner <you>` atomically takes ownership
+   (and moves the task to `in_progress`); it refuses if another agent holds the claim —
+   NEVER work a task someone else owns. Release when parking; handoff when transferring.
 4. **Declare relationships immediately.** Set `depends_on`/`affects` at creation time;
    add discovered ones the moment you discover them.
 5. **Blockers are public.** The second work stalls (missing access, failing dep, unanswered
@@ -53,8 +60,10 @@ Start of session:
 
 ```
 agenttasker ls                    # whole board
-agenttasker ls --ready            # pick work from here (oldest first)
+agenttasker ls --ready            # pick work from here (priority order, P0 first)
 agenttasker ls --blocked          # anything stalled? chase it
+agenttasker claims                # who holds what (and for how long)
+agenttasker claims --stale 12     # claims rotting for over 12h — investigate
 ```
 
 During work: append findings as you go (`update <ref> --append-evidence "..."`).
@@ -67,16 +76,27 @@ decide deliberately whether they stay parked.
 Both `agenttasker` and the short alias `atx` invoke the same tool; examples use
 `agenttasker` for clarity.
 ```
-agenttasker add "Name" [-d DESC] [-s STATUS] [-e EVIDENCE] [--blocker TEXT]... [--dep REF]... [--affects REF]...
-agenttasker ls [-s STATUS]... [--search TEXT] [--ready] [--blocked] [-a] [--json]
+agenttasker add "Name" [-d DESC] [-s STATUS] [-e EVIDENCE] [--priority P0-P3] [--tag TAG]...
+                     [--blocker TEXT]... [--dep REF]... [--affects REF]...
+agenttasker ls [-s STATUS]... [--priority P0-P3]... [--tag TAG] [--search TEXT]
+               [--ready] [--blocked] [--stale [HOURS]] [-a] [--json]
 agenttasker show REF [--json]
 agenttasker update REF [--name N] [-d D] [-e E] [--append-evidence TEXT]
-                       [--blocker T]... [--dep R]... [--affects R]...
+                       [--priority P] [--tag T]... [--blocker T]... [--dep R]... [--affects R]...
+agenttasker claim REF --owner NAME [--force]     # atomic; also sets in_progress
+agenttasker release REF [--owner NAME] [--force]
+agenttasker handoff REF --to NAME [--from NAME] [--force]
+agenttasker claims [--stale [HOURS]]
 agenttasker move REF (--to STATUS | --next | --prev)
 agenttasker done REF
+agenttasker attach REF FILE [--name NAME]        # any binary; sha256-addressed on disk
+agenttasker attachments REF [--json]
+agenttasker detach REF ATTACHMENT_ID
+agenttasker export [PATH] [-a] [--no-attachments]   # portable JSON; attachments base64-embedded
+agenttasker import PATH [--mode merge|replace] [--dry-run]
 agenttasker rm REF                # permanent; refs in other tasks are scrubbed
 agenttasker projects
-agenttasker board                 # TUI (humans): arrows navigate, Enter details, m moves
+agenttasker board                 # TUI (humans): arrows navigate, Enter details+edit, m moves
 agenttasker mcp                   # stdio MCP server
 ```
 
@@ -86,8 +106,10 @@ pass `--dep ''` / `--blocker ''` to clear.
 
 ## MCP tools
 
-`add_task`, `get_task`, `list_tasks` (`ready`/`blocked` filters, `all_projects`),
-`update_task`, `set_status`, `delete_task`, `list_projects`.
+`add_task`, `get_task`, `list_tasks` (filters: `ready`/`blocked`/`priority`/`tag`/`stale_hours`,
+`all_projects`), `update_task`, `set_status`, `delete_task`, `list_projects`,
+`claim_task`, `release_task`, `handoff_task`,
+`add_attachment` (base64 in), `list_attachments`, `read_attachment` (base64 out).
 
 Tool errors come back as `ERROR: ...` text — read it, fix the input (usually a bad ref
 or unknown status), retry. List fields passed to `update_task` replace; `[]` clears.
@@ -111,6 +133,14 @@ also takes an explicit `project` argument to operate cross-project.
 
 ## Recipes
 
+Pick up work (the core loop):
+```
+agenttasker ls --ready                    # P0s first — take the top one
+agenttasker claim 14 --owner agent-7      # atomically yours (refuses if taken)
+agenttasker update 14 --append-evidence "repro confirmed in tests/e2e"
+agenttasker done 14
+```
+
 Discovered a dependency mid-task:
 ```
 agenttasker update 14 --dep 7          # 14 now waits on 7
@@ -120,7 +150,8 @@ agenttasker ls --blocked               # confirm visibility
 Blocked externally, parking honestly:
 ```
 agenttasker update 14 --blocker "need write access to staging bucket"
-agenttasker move 14 --prev             # back to todo (or backlog)
+agenttasker release 14 --owner agent-7  # free it for whoever unblocks
+agenttasker move 14 --prev
 ```
 
 Task finished, awaiting human review:
@@ -129,14 +160,28 @@ agenttasker move 14 --next             # -> in_review
 agenttasker update 14 --append-evidence "ran full test suite; 34 passed"
 ```
 
-Chaining handoff work:
+Handing an in-flight task to another agent:
 ```
-agenttasker add "Wire config loader" --dep 14 --affects 20
+agenttasker handoff 14 --to agent-9 --from agent-7
+```
+
+Attach supporting artifacts (logs, screenshots, datasets):
+```
+agenttasker attach 14 failure.png
+agenttasker attachments 14
+```
+
+Machine-to-machine handoff (no hosted service needed):
+```
+agenttasker export snapshot.json -a     # every project, attachments base64-embedded
+# move snapshot.json to the other machine, then:
+agenttasker import snapshot.json --dry-run   # preview collisions first
+agenttasker import snapshot.json             # merges; name-matched tasks kept and re-linked
 ```
 
 ## Failure modes to avoid
 
-- Starting work on a task still in `backlog` without claiming it (`in_progress`).
+- Working a task you don't own — the claim is the coordination primitive; respect refusals.
 - Marking `done` without evidence of verification.
-- Letting `in_progress` tasks pile up across sessions without resolution.
 - Free-text task ids in `depends_on` — use numeric refs; external blockers are for prose.
+- Editing the export JSON by hand — it is versioned; a mismatched version is rejected.

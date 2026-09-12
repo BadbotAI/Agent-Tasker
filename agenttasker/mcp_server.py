@@ -68,6 +68,8 @@ def build_server():
         blockers: Optional[list[str]] = None,
         depends_on: Optional[list[str]] = None,
         affects: Optional[list[str]] = None,
+        priority: str = "P2",
+        tags: Optional[list[str]] = None,
     ) -> str:
         """Create a task in the project board.
 
@@ -80,6 +82,8 @@ def build_server():
             blockers: free-form external blockers (e.g. "waiting on vendor API key").
             depends_on: task refs this task depends on ('12' or 'Project-12').
             affects: task refs whose outcome this work touches.
+            priority: P0 (urgent) .. P3 (default P2). Ready lists sort by this.
+            tags: workstream/labels.
         """
         try:
             with Store() as store:
@@ -88,10 +92,11 @@ def build_server():
                     prj, name,
                     description=description, status=status, evidence=evidence,
                     blockers=blockers or [], depends_on=depends_on or [], affects=affects or [],
+                    priority=priority, tags=tags or [],
                 )
                 return (
                     f"added {prj}-{task.id} [{task.status}] {task.name}\n"
-                    f"hint: `set_status {task.id} in_progress` when you start it"
+                    f"hint: `claim_task ref={task.id} owner=<you>` before starting work"
                 )
         except TaskError as exc:
             return f"ERROR: {exc}"
@@ -116,22 +121,34 @@ def build_server():
         ready: bool = False,
         blocked: bool = False,
         all_projects: bool = False,
+        priority: Optional[str] = None,
+        tag: Optional[str] = None,
+        stale_hours: Optional[float] = None,
     ) -> str:
-        """List tasks in board order.
+        """List tasks in board order, then priority (P0 first).
 
         Args:
             project: project namespace; defaults to the server's working project.
             status: filter by status (or comma-separated list).
-            search: match task name/description/evidence.
+            search: match task name/description/evidence/tags.
             ready: only tasks that can be started now (deps done, no blockers).
             blocked: only blocked tasks (unfinished deps or external blockers).
             all_projects: list across every project in the database.
+            priority: filter by priority (or comma-separated list, e.g. "P0,P1").
+            tag: filter by workstream/tag.
+            stale_hours: only claims older than this many hours.
         """
         try:
             with Store() as store:
                 prj = None if all_projects else _project(project)
                 statuses = [s for s in (status or "").split(",") if s.strip()] or None
-                tasks = store.list_tasks(prj, statuses=statuses, search=search)
+                priorities = [p for p in (priority or "").split(",") if p.strip()] or None
+                tasks = store.list_tasks(
+                    prj, statuses=statuses, search=search,
+                    priorities=priorities,
+                    tags=[tag] if tag else None,
+                    stale_hours=stale_hours,
+                )
                 if ready:
                     tasks = [t for t in tasks if store.is_ready(t)]
                 if blocked:
@@ -151,9 +168,11 @@ def build_server():
         blockers: Optional[list[str]] = None,
         depends_on: Optional[list[str]] = None,
         affects: Optional[list[str]] = None,
+        priority: Optional[str] = None,
+        tags: Optional[list[str]] = None,
     ) -> str:
         """Update task fields. List fields REPLACE when provided (pass [] to clear).
-        append_evidence adds a timestamped line — use it to log progress/findings.
+        append_evidence adds a timestamped line atomically — use it to log progress.
 
         Args:
             ref: task id or 'Project-id'.
@@ -163,11 +182,15 @@ def build_server():
             blockers: new external blocker list (replaces; [] clears).
             depends_on: new depends-on refs (replaces; [] clears).
             affects: new affects refs (replaces; [] clears).
+            priority: new priority P0..P3.
+            tags: new tag list (replaces; [] clears).
         """
         try:
             with Store() as store:
                 prj = _project(project)
                 task = store.get(prj, ref)
+                if append_evidence:
+                    task = store.append_evidence(task, append_evidence)  # atomic append
                 changes: dict = {}
                 if name is not None:
                     changes["name"] = name
@@ -175,19 +198,17 @@ def build_server():
                     changes["description"] = description
                 if evidence is not None:
                     changes["evidence"] = evidence
-                if append_evidence:
-                    from .core import utcnow
-
-                    changes["evidence"] = (
-                        f"{task.evidence.rstrip()}\n\n[{utcnow().replace('+00:00', 'Z')}] {append_evidence}".strip("\n")
-                    )
                 if blockers is not None:
                     changes["blockers"] = blockers
                 if depends_on is not None:
                     changes["depends_on"] = depends_on
                 if affects is not None:
                     changes["affects"] = affects
-                updated = store.update(task, **changes)
+                if priority is not None:
+                    changes["priority"] = priority
+                if tags is not None:
+                    changes["tags"] = tags
+                updated = store.update(task, **changes) if changes else task
                 return f"updated {prj}-{updated.id}"
         except TaskError as exc:
             return f"ERROR: {exc}"
@@ -230,6 +251,136 @@ def build_server():
         except TaskError as exc:
             return f"ERROR: {exc}"
 
+    @mcp.tool()
+    def claim_task(ref: str, owner: str, project: Optional[str] = None, force: bool = False) -> str:
+        """Atomically take ownership of a task (moves it to in_progress).
+        Refuses if another agent already claimed it — never work an unowned
+        in_progress task. Re-claiming your own claim is a no-op refresh.
+
+        Args:
+            ref: task id or 'Project-id'.
+            owner: your agent/person name.
+            project: project namespace; defaults to the server's working project.
+            force: take the claim even if someone else holds it (last resort).
+        """
+        try:
+            with Store() as store:
+                prj = _project(project)
+                task = store.get(prj, ref)
+                updated = store.claim(task, owner, force=force)
+                return f"{prj}-{updated.id} claimed by {updated.owner} (status -> {updated.status})"
+        except TaskError as exc:
+            return f"ERROR: {exc}"
+
+    @mcp.tool()
+    def release_task(ref: str, project: Optional[str] = None, owner: Optional[str] = None,
+                     force: bool = False) -> str:
+        """Release your claim on a task (e.g. you are parking it or done with it).
+
+        Args:
+            ref: task id or 'Project-id'.
+            project: project namespace; defaults to the server's working project.
+            owner: your name; must match the holder unless force.
+            force: release regardless of holder.
+        """
+        try:
+            with Store() as store:
+                prj = _project(project)
+                task = store.get(prj, ref)
+                updated = store.release(task, owner=owner, force=force)
+                return f"{prj}-{updated.id} released"
+        except TaskError as exc:
+            return f"ERROR: {exc}"
+
+    @mcp.tool()
+    def handoff_task(ref: str, to: str, project: Optional[str] = None,
+                     from_owner: str = "", force: bool = False) -> str:
+        """Transfer a claim to another owner (explicit handoff).
+
+        Args:
+            ref: task id or 'Project-id'.
+            to: new owner name.
+            project: project namespace; defaults to the server's working project.
+            from_owner: current owner (you); required unless force.
+            force: transfer regardless of holder.
+        """
+        try:
+            with Store() as store:
+                prj = _project(project)
+                task = store.get(prj, ref)
+                updated = store.handoff(task, to, from_owner=from_owner, force=force)
+                return f"{prj}-{updated.id} {task.owner or '(unclaimed)'} -> {updated.owner}"
+        except TaskError as exc:
+            return f"ERROR: {exc}"
+
+    @mcp.tool()
+    def add_attachment(ref: str, filename: str, content_b64: str,
+                       project: Optional[str] = None) -> str:
+        """Attach a supporting file (json, image, zip, ...) to a task.
+        Content is base64-encoded; stored content-addressed (sha256) on disk.
+
+        Args:
+            ref: task id or 'Project-id'.
+            filename: name to store it under (e.g. 'screenshot.png').
+            content_b64: base64 of the file bytes.
+            project: project namespace; defaults to the server's working project.
+        """
+        try:
+            import base64
+
+            with Store() as store:
+                prj = _project(project)
+                task = store.get(prj, ref)
+                data = base64.b64decode(content_b64, validate=True)
+                att = store.add_attachment_bytes(task, filename, data)
+                return (f"attached #{att['id']} {att['filename']} ({att['size']} bytes,"
+                        f" sha256 {att['sha256'][:12]})")
+        except TaskError as exc:
+            return f"ERROR: {exc}"
+        except (ValueError, TypeError):
+            return "ERROR: content_b64 is not valid base64"
+
+    @mcp.tool()
+    def list_attachments(ref: str, project: Optional[str] = None) -> str:
+        """List a task's attachments (id, filename, size, sha256).
+
+        Args:
+            ref: task id or 'Project-id'.
+            project: project namespace; defaults to the server's working project.
+        """
+        try:
+            with Store() as store:
+                prj = _project(project)
+                task = store.get(prj, ref)
+                atts = store.list_attachments(task)
+                if not atts:
+                    return "(no attachments)"
+                return "\n".join(
+                    f"#{a['id']}  {a['filename']}  {a['size']} bytes  {a['sha256'][:12]}"
+                    for a in atts
+                )
+        except TaskError as exc:
+            return f"ERROR: {exc}"
+
+    @mcp.tool()
+    def read_attachment(ref: str, attachment_id: int, project: Optional[str] = None) -> str:
+        """Read an attachment back as base64 (verify against the listed sha256).
+
+        Args:
+            ref: task id or 'Project-id'.
+            attachment_id: id from list_attachments.
+            project: project namespace; defaults to the server's working project.
+        """
+        try:
+            import base64
+
+            with Store() as store:
+                prj = _project(project)
+                task = store.get(prj, ref)
+                data = store.read_attachment_bytes(task, attachment_id)
+                return base64.b64encode(data).decode("ascii")
+        except TaskError as exc:
+            return f"ERROR: {exc}"
     @mcp.tool()
     def list_projects() -> str:
         """List all projects in the database with per-status task counts."""

@@ -5,7 +5,7 @@ import json as jsonlib
 import os
 import sys
 from collections import Counter
-from typing import Sequence
+from pathlib import Path
 
 from . import __version__, render
 from .core import (
@@ -19,6 +19,7 @@ from .core import (
     is_ready,
     next_status,
     normalize_status,
+    parse_tags,
     prev_status,
     resolve_project,
     status_label,
@@ -102,6 +103,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="task this depends on (id or PROJECT-id); repeatable, comma-separated ok",
     )
     p.add_argument(
+        "--priority", default="P2", metavar="P0-P3",
+        help="priority level P0 (highest) .. P3 (default: P2)",
+    )
+    p.add_argument(
+        "--tag", action="append", metavar="TAG",
+        help="workstream/tag label; repeatable, comma-separated ok",
+    )
+    p.add_argument(
         "--affects", action="append", metavar="REF",
         help="task whose outcome this work affects; repeatable, comma-separated ok",
     )
@@ -114,6 +123,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ready", action="store_true", help="only tasks ready to start now")
     p.add_argument("--blocked", action="store_true", help="only tasks blocked (deps or external)")
     p.add_argument("-a", "--all-projects", action="store_true", help="list tasks across all projects")
+    p.add_argument("--priority", action="append", metavar="P0-P3",
+                   help="filter by priority; repeatable, comma-separated")
+    p.add_argument("--tag", action="append", metavar="TAG", help="filter by tag/workstream")
+    p.add_argument("--stale", nargs="?", const=24, metavar="HOURS", type=float,
+                   help="only claims older than HOURS (default 24)")
     p.add_argument("--json", action="store_true", help="machine-readable output")
     p.set_defaults(func=cmd_ls)
 
@@ -134,7 +148,64 @@ def build_parser() -> argparse.ArgumentParser:
                    help="depends-on refs (replaces list; repeatable; '' clears)")
     p.add_argument("--affects", action="append", metavar="REF",
                    help="affects refs (replaces list; repeatable; '' clears)")
+    p.add_argument("--priority", metavar="P0-P3", help="new priority (P0 highest .. P3)")
+    p.add_argument("--tag", action="append", metavar="TAG",
+                   help="tags/workstreams (replaces list; repeatable; '' clears)")
     p.set_defaults(func=cmd_update)
+
+    p = sub.add_parser("claim", parents=[common], help="atomically take ownership of a task")
+    p.add_argument("ref", help="task id or PROJECT-id")
+    p.add_argument("--owner", required=True, metavar="NAME", help="claiming agent/person")
+    p.add_argument("--force", action="store_true", help="take the claim even if held")
+    p.set_defaults(func=cmd_claim)
+
+    p = sub.add_parser("release", parents=[common], help="release a claim")
+    p.add_argument("ref", help="task id or PROJECT-id")
+    p.add_argument("--owner", metavar="NAME", help="your name; must match the holder")
+    p.add_argument("--force", action="store_true", help="release regardless of holder")
+    p.set_defaults(func=cmd_release)
+
+    p = sub.add_parser("handoff", parents=[common], help="transfer a claim to another owner")
+    p.add_argument("ref", help="task id or PROJECT-id")
+    p.add_argument("--to", required=True, metavar="NAME", help="new owner")
+    p.add_argument("--from", dest="from_owner", metavar="NAME", help="current owner (you)")
+    p.add_argument("--force", action="store_true", help="transfer regardless of holder")
+    p.set_defaults(func=cmd_handoff)
+
+    p = sub.add_parser("claims", parents=[common], help="list active claims (owner + age)")
+    p.add_argument("--stale", nargs="?", const=24, metavar="HOURS", type=float,
+                   help="only claims older than HOURS (default 24)")
+    p.set_defaults(func=cmd_claims)
+
+    p = sub.add_parser("export", parents=[common], help="export tasks to a portable JSON snapshot")
+    p.add_argument("path", nargs="?", default="-", help="output file ('-' = stdout)")
+    p.add_argument("-a", "--all-projects", action="store_true", help="export every project")
+    p.add_argument("--no-attachments", action="store_true",
+                   help="exclude base64-encoded attachments from the export")
+    p.set_defaults(func=cmd_export)
+
+    p = sub.add_parser("import", parents=[common], help="import tasks from an export snapshot")
+    p.add_argument("path", help="export file to import ('-' = stdin)")
+    p.add_argument("--mode", choices=("merge", "replace"), default="merge",
+                   help="merge: keep existing tasks; replace: clear imported projects first")
+    p.add_argument("--dry-run", action="store_true", help="preview decisions without writing")
+    p.set_defaults(func=cmd_import)
+
+    p = sub.add_parser("attach", parents=[common], help="attach a file to a task")
+    p.add_argument("ref", help="task id or PROJECT-id")
+    p.add_argument("file", help="path of the file to attach")
+    p.add_argument("--name", metavar="FILENAME", help="stored filename (default: source name)")
+    p.set_defaults(func=cmd_attach)
+
+    p = sub.add_parser("attachments", parents=[common], help="list a task's attachments")
+    p.add_argument("ref", help="task id or PROJECT-id")
+    p.add_argument("--json", action="store_true", help="machine-readable output")
+    p.set_defaults(func=cmd_attachments)
+
+    p = sub.add_parser("detach", parents=[common], help="remove an attachment")
+    p.add_argument("ref", help="task id or PROJECT-id")
+    p.add_argument("attachment", type=int, help="attachment id (see `attachments`)")
+    p.set_defaults(func=cmd_detach)
 
     p = sub.add_parser("move", parents=[common], help="change task status")
     p.add_argument("ref", help="task id or PROJECT-id")
@@ -164,8 +235,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-# --- command handlers --------------------------------------------------------
-
 def _project_map(store: Store, project: str) -> dict[int, Task]:
     return {t.id: t for t in store.list_tasks(project)}
 
@@ -190,6 +259,8 @@ def cmd_add(args, store: Store) -> int:
         blockers=[b for b in (args.blocker or []) if b.strip()],
         depends_on=_comma_list(args.dep),
         affects=_comma_list(args.affects),
+        priority=args.priority,
+        tags=parse_tags(args.tag or []),
     )
     print(f"Added {display_ref(project, task.id)} [{task.status}] {task.name}")
     return 0
@@ -198,7 +269,16 @@ def cmd_add(args, store: Store) -> int:
 def cmd_ls(args, store: Store) -> int:
     project = None if args.all_projects else resolve_project(args.project)
     statuses = _comma_list(args.status) or None
-    tasks = store.list_tasks(project, statuses=statuses, search=args.search)
+    priorities = _comma_list(args.priority) or None
+    tags = _comma_list(args.tag) or None
+    tasks = store.list_tasks(
+        project,
+        statuses=statuses,
+        search=args.search,
+        priorities=priorities,
+        tags=tags,
+        stale_hours=args.stale,
+    )
     if args.ready:
         tasks = [t for t in tasks if store.is_ready(t)]
     if args.blocked:
@@ -216,6 +296,8 @@ def cmd_ls(args, store: Store) -> int:
         suffix += " [blocked]"
     if args.search:
         suffix += f" [search: {args.search}]"
+    if args.stale is not None:
+        suffix += f" [stale > {args.stale:g}h]"
     print(f"{scope} — {len(tasks)} task(s){suffix}")
     # dependency flags need the FULL project task set, not the filtered listing
     maps: dict[str, dict[int, Task]] = {
@@ -252,18 +334,20 @@ def cmd_update(args, store: Store) -> int:
         changes["description"] = args.description
     if args.evidence is not None:
         changes["evidence"] = args.evidence
-    if args.append_evidence:
-        stamp = utcnow().replace("+00:00", "Z")
-        new = f"{task.evidence.rstrip()}\n\n[{stamp}] {args.append_evidence}".strip("\n")
-        changes["evidence"] = new
     if args.blocker is not None:
         changes["blockers"] = [b for b in args.blocker if b.strip()]
     if args.dep is not None:
         changes["depends_on"] = _comma_list(args.dep)
     if args.affects is not None:
         changes["affects"] = _comma_list(args.affects)
+    if args.append_evidence:
+        task = store.append_evidence(task, args.append_evidence)  # atomic SQL append
+    if args.priority is not None:
+        changes["priority"] = args.priority
+    if args.tag is not None:
+        changes["tags"] = _comma_list(args.tag)
 
-    updated = store.update(task, **changes)
+    updated = store.update(task, **changes) if changes else task
     print(f"Updated {display_ref(project, updated.id)}")
     print()
     print(render.detail(updated, _project_map(store, project)))
@@ -315,6 +399,107 @@ def cmd_projects(args, store: Store) -> int:
             f"{bucket[s]:<11}" for s in STATUSES
         )
         print(f"{row}  {bucket['total']}")
+    return 0
+
+
+def cmd_claim(args, store: Store) -> int:
+    project = resolve_project(args.project)
+    task = store.get(project, args.ref)
+    updated = store.claim(task, args.owner, force=args.force)
+    print(f"{display_ref(project, updated.id)} claimed by {updated.owner} (status -> {updated.status})")
+    return 0
+
+
+def cmd_release(args, store: Store) -> int:
+    project = resolve_project(args.project)
+    task = store.get(project, args.ref)
+    updated = store.release(task, owner=args.owner, force=args.force)
+    print(f"{display_ref(project, updated.id)} released (was {task.owner or 'unclaimed'})")
+    return 0
+
+
+def cmd_handoff(args, store: Store) -> int:
+    project = resolve_project(args.project)
+    task = store.get(project, args.ref)
+    updated = store.handoff(task, args.to, from_owner=args.from_owner or "", force=args.force)
+    print(f"{display_ref(project, updated.id)} {task.owner or '(unclaimed)'} -> {updated.owner}")
+    return 0
+def cmd_claims(args, store: Store) -> int:
+    tasks = (
+        store.list_tasks(None, stale_hours=args.stale)
+        if args.stale is not None
+        else [t for t in store.list_tasks(None) if t.owner]
+    )
+    if not tasks:
+        print("no active claims" + (" older than the threshold" if args.stale is not None else ""))
+        return 0
+    maps = {p: {t.id: t for t in store.list_tasks(p)} for p in {t.project for t in tasks}}
+    for t in tasks:
+        print(render.task_line(t, maps[t.project], show_project=True))
+    return 0
+
+
+def cmd_export(args, store: Store) -> int:
+    project = resolve_project(args.project)
+    payload = store.export_tasks(
+        None if args.all_projects else project, include_attachments=not args.no_attachments
+    )
+    text = jsonlib.dumps(payload, indent=2)
+    if args.path == "-":
+        print(text)
+    else:
+        Path(args.path).expanduser().write_text(text + "\n", encoding="utf-8")
+        n = len(payload["tasks"])
+        print(f"exported {n} task(s) -> {args.path}")
+    return 0
+
+
+def cmd_import(args, store: Store) -> int:
+    if args.path == "-":
+        payload = jsonlib.loads(sys.stdin.read())
+    else:
+        payload = jsonlib.loads(Path(args.path).expanduser().read_text(encoding="utf-8"))
+    report = store.import_tasks(payload, mode=args.mode, dry_run=args.dry_run)
+    verb = "would import" if args.dry_run else "imported"
+    print(f"{verb}: {len(report['created'])} created, {len(report['existing'])} already present")
+    for line in report["created"]:
+        print(f"  + {line}")
+    for line in report["existing"]:
+        print(f"  = {line}")
+    for line in report["warnings"]:
+        print(f"  ! {line}")
+    return 0
+
+
+def cmd_attach(args, store: Store) -> int:
+    project = resolve_project(args.project)
+    task = store.get(project, args.ref)
+    att = store.add_attachment(task, args.file, filename=args.name)
+    print(f"attached #{att['id']} {att['filename']} ({att['size']} bytes, sha256 {att['sha256'][:12]}…)")
+    return 0
+
+
+def cmd_attachments(args, store: Store) -> int:
+    project = resolve_project(args.project)
+    task = store.get(project, args.ref)
+    atts = store.list_attachments(task)
+    if args.json:
+        print(jsonlib.dumps(atts, indent=2))
+        return 0
+    if not atts:
+        print("(no attachments)")
+        return 0
+    for att in atts:
+        print(f"  #{att['id']}  {att['filename']}  {att['size']} bytes  {att['sha256'][:12]}…")
+        print(f"       {att['path']}")
+    return 0
+
+
+def cmd_detach(args, store: Store) -> int:
+    project = resolve_project(args.project)
+    task = store.get(project, args.ref)
+    name = store.remove_attachment(task, args.attachment)
+    print(f"detached #{args.attachment} {name}")
     return 0
 
 

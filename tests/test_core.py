@@ -33,25 +33,10 @@ from agenttasker.core import (
 
 def _ls_args(**over):
     base = dict(project="demo", all_projects=False, status=None, search=None,
-                ready=False, blocked=False, json=False)
+                ready=False, blocked=False, json=False,
+                priority=None, tag=None, stale=None)
     base.update(over)
     return Namespace(**base)
-
-from agenttasker.core import (
-    BACKLOG,
-    DONE,
-    IN_PROGRESS,
-    TODO,
-    Store,
-    TaskError,
-    display_ref,
-    is_blocked,
-    is_ready,
-    next_status,
-    normalize_status,
-    parse_ref,
-    prev_status,
-)
 
 
 class CoreTest(unittest.TestCase):

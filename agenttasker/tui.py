@@ -18,16 +18,19 @@ import os
 import textwrap
 
 from .core import (
+    DEFAULT_PRIORITY,
     DONE,
     STARTABLE_STATUSES,
     STATUSES,
     Store,
     Task,
     TaskError,
+    claim_age_hours,
     is_blocked,
     is_ready,
     next_status,
     prev_status,
+    priority_label,
     status_label,
     unfinished_dep_ids,
 )
@@ -270,6 +273,10 @@ class Board:
         while len(excerpt) < 4:
             excerpt.append("")
         parts: list[str] = []
+        if task.priority != DEFAULT_PRIORITY:
+            parts.append(priority_label(task.priority))
+        if task.owner:
+            parts.append("@" + task.owner)
         if task.depends_on:
             shown = ",".join(f"#{i}" for i in task.depends_on[:3])
             parts.append("deps:" + shown + ("…" if len(task.depends_on) > 3 else ""))
@@ -499,10 +506,18 @@ class Board:
             state = ("in flight", dim)
         dependents = [t for t in self.tasks if task.id in t.depends_on and t.id != task.id]
 
+        age = claim_age_hours(task)
+        owner_text = f"{task.owner} (claimed {age:.1f}h ago)" if (task.owner and age is not None) else (task.owner or "unclaimed")
+        atts = len(self.store.list_attachments(task))
+        att_line = f"{atts} file(s) — manage with `agenttasker attachments {task.id}`"
+
         return [
             block("name", "TITLE", [(task.name, 0)]),
             block("status", "STATUS", [(status_label(task.status), status_attr)]),
+            block("priority", "PRIORITY", [(priority_label(task.priority), bold)]),
+            block("tags", "TAGS", [(", ".join(task.tags) if task.tags else "(none)", 0)]),
             block(None, "PROJECT", [(task.project, dim)]),
+            block(None, "OWNER", [(owner_text, alert if task.owner else dim)]),
             block("description", "DESCRIPTION",
                   [("─", 0)] + [(l, 0) for l in (task.description.splitlines() or ["(none)"])]),
             block("evidence", "EVIDENCE / PRE-TASK ANALYSIS",
@@ -512,6 +527,7 @@ class Board:
             block("depends_on", "DEPENDS ON", dep_lines(task.depends_on, True)),
             block("affects", "AFFECTS", dep_lines(task.affects, False)),
             block(None, "BLOCKS (TASKS DEPENDING ON THIS)", dep_lines([t.id for t in dependents], True)),
+            block(None, "ATTACHMENTS", [(att_line, dim)]),
             block(None, "STATE", [("─", 0), state]),
             block(None, "DATES", [(f"created {task.created_at}  ·  updated {task.updated_at}", dim)]),
         ]
@@ -541,11 +557,25 @@ class Board:
                 return None
             refs = [r.strip() for r in value.split(",") if r.strip()]
             return self.store.update(task, **{key: refs})
+        if key == "priority":
+            options = [f"{p} — {label}" for p, label in
+                       zip(("P0", "P1", "P2", "P3"), ("urgent", "high", "normal", "low"))]
+            idx = self._menu(stdscr, "Priority", options, task.priority)
+            if idx is None:
+                return None
+            return self.store.update(task, priority=idx)
+        if key == "tags":
+            value = self._input_box(stdscr, "Tags (comma-separated)", ", ".join(task.tags))
+            if value is None:
+                return None
+            return self.store.update(task, tags=[t for t in value.split(",") if t.strip()])
         if key == "blockers":
             text = self._edit_in_editor("\n".join(task.blockers))
             if text is None:
                 return None
-            return self.store.update(task, blockers=[l.strip() for l in text.splitlines() if l.strip()])
+            return self.store.update(
+                task, blockers=[l.strip() for l in text.splitlines() if l.strip()]
+            )
         if key in ("description", "evidence"):
             text = self._edit_in_editor(getattr(task, key))
             if text is None:

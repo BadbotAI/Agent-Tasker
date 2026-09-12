@@ -22,12 +22,12 @@ Board order:
 | `done` | complete and verified |
 
 Tasks carry a **name**, **description**, **evidence** (analysis gathered pre-task),
-free-form external **blockers**, **depends_on** (hard task deps) and **affects**
-(informational links). A task is *ready* when it sits in `backlog`/`todo`, has no
-external blockers, and all dependencies are `done`. A task is *blocked* while any
-dependency is unfinished or any external blocker is open.
-
-## Install
+free-form external **blockers**, **depends_on** (hard task deps), **affects**
+(informational links), **priority** (`P0`…`P3`, default `P2`), **tags** (workstream
+labels), an atomic **owner** claim, and **attachments** (any binary file,
+sha256-addressed on disk). Listings sort by status, then priority. A task is *ready*
+when it sits in `backlog`/`todo`, has no blockers, and all dependencies are `done`.
+A task is *blocked* while any dependency is unfinished or any external blocker is open.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[mcp]'   # [mcp] only needed for the MCP server
@@ -50,12 +50,12 @@ from the description.
 ## Quick start
 
 ```bash
-agenttasker add "Fix login redirect" -d "Session cookie lost on 302" -e "traced to SameSite=None" --status todo
+agenttasker add "Fix login redirect" -d "Session cookie lost on 302" -e "traced to SameSite=None" --status todo --priority P1 --tag web
 agenttasker add "Write regression test" --dep 1
-agenttasker ls                      # board order, with ready/blocked flags
-agenttasker ls --ready              # work that can start now
+agenttasker ls --ready              # work that can start now, P0s first
+agenttasker claim 1 --owner agent-7 # atomically take it (refuses if held)
 agenttasker ls --blocked            # stuck work (unfinished deps or external blockers)
-agenttasker move 1 --next           # todo -> in_progress
+agenttasker update 1 --append-evidence "repro confirmed"
 agenttasker done 1
 agenttasker board                   # TUI for humans
 ```
@@ -70,6 +70,27 @@ One SQLite file, WAL mode:
 
 - default: `~/.local/share/agenttasker/tasks.db`
 - override: `AGENTTASKER_DB=/path/to/tasks.db`
+- attachments: `<db dir>/attachments/`, content-addressed by sha256
+
+## Coordination, snapshots, attachments
+
+```bash
+agenttasker claim REF --owner NAME [--force]   # atomic ownership; also sets in_progress
+agenttasker release REF [--owner NAME]         # give a task back
+agenttasker handoff REF --to NAME [--from ME]  # explicit transfer
+agenttasker claims [--stale HOURS]             # who holds what, and what's rotting
+
+agenttasker attach REF FILE                    # any binary (image, zip, json…)
+agenttasker attachments REF
+agenttasker detach REF ID
+
+agenttasker export [PATH] [-a]                 # portable JSON; attachments base64-embedded
+agenttasker import PATH [--mode merge|replace] [--dry-run]
+```
+
+Exports are versioned; the importer remaps ids (name-matched tasks are kept and
+dependency links re-resolved), previews decisions with `--dry-run`, and verifies
+attachment sha256 checksums on the way back in.
 
 ## TUI keys
 
@@ -115,9 +136,10 @@ Client config (Claude Desktop / any MCP client):
 
 The server resolves its project from its working directory (git repo name), or
 `$AGENTTASKER_PROJECT`; every tool also takes an explicit `project` argument.
-
-Tools: `add_task`, `get_task`, `list_tasks` (with `ready`/`blocked` filters),
-`update_task`, `set_status`, `delete_task`, `list_projects`.
+Tools: `add_task`, `get_task`, `list_tasks` (filters: `ready`/`blocked`/`priority`/`tag`/`stale_hours`),
+`update_task`, `set_status`, `delete_task`, `list_projects`,
+`claim_task`, `release_task`, `handoff_task`,
+`add_attachment` (base64 in), `list_attachments`, `read_attachment` (base64 out).
 
 Agents: see [SKILL.md](SKILL.md) for the full working discipline.
 
