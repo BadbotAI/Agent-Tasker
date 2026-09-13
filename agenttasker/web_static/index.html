@@ -115,9 +115,9 @@ tr.done td { color: var(--dim); }
                border-top: 1px solid var(--line); flex-wrap: wrap; flex: 0 0 auto; }
 .modal .foot .spacer { flex: 1; }
 .static { padding: 6px 0; white-space: pre-wrap; word-break: break-word; }
-.fieldhead { display: flex; align-items: baseline; gap: 8px; }
+.fieldhead { display: flex; align-items: baseline; gap: 6px; }
 .fieldhead label { color: var(--dim); font-size: 11px; text-transform: uppercase;
-                   letter-spacing: .08em; flex: 1; }
+                   letter-spacing: .08em; flex: 0 0 auto; }
 button.mini { padding: 1px 8px; font-size: 11px; }
 .trio { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;
         flex: 1 1 auto; min-height: 220px; }
@@ -129,8 +129,12 @@ button.mini { padding: 1px 8px; font-size: 11px; }
 .pane textarea { width: 100%; height: 100%; min-height: 0; flex: 1 1 auto; resize: none; }
 .topfields { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
 .topfields .full { grid-column: 1 / -1; }
-.att { display: flex; gap: 10px; align-items: center; padding: 4px 0; }
-.att .sz { color: var(--dim); font-size: 12px; }
+.att { display: grid; grid-template-columns: 1fr auto 26px; gap: 10px;
+       align-items: center; padding: 4px 0; }
+.att a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.att .sz { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums;
+           white-space: nowrap; text-align: right; }
+.att button { width: 26px; padding: 1px 0; text-align: center; }
 .att form { display: inline; }
 .note { color: var(--dim); font-size: 12px; }
 .err { color: #f87171; }
