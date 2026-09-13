@@ -80,19 +80,21 @@ tr.row { cursor: pointer; }
            gap: 14px; padding: 14px; align-items: start; }
 .bigcard { background: var(--panel); border: 1px solid var(--line);
            border-left: 4px solid var(--sc, var(--dim)); border-radius: 10px;
-           padding: 14px 16px; cursor: pointer; }
+           padding: 14px 16px; cursor: pointer;
+           height: 280px; overflow: hidden; display: flex; flex-direction: column; }
 .bigcard:hover { outline: 1px solid var(--accent); }
 .bigcard .bt { font-size: 15px; font-weight: 700; word-break: break-word; }
 .bigcard .m { color: var(--dim); font-size: 12px; margin: 6px 0 2px; }
-.bigcard .sec { margin-top: 10px; font-size: 13px; white-space: pre-wrap; }
+.bigcard .sec { margin-top: 10px; font-size: 13px; flex: 1 1 0; min-height: 0; }
+.bigcard .clamp { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical;
+                  overflow: hidden; white-space: pre-wrap; }
 .bigcard .lab { display: block; color: var(--dim); font-size: 10px;
                 text-transform: uppercase; letter-spacing: .08em; margin-bottom: 2px; }
-.bigcard .foot { display: flex; gap: 14px; align-items: baseline; margin-top: 12px;
+.bigcard .foot { display: flex; gap: 14px; align-items: baseline; margin-top: auto;
                  font-size: 12px; color: var(--dim); flex-wrap: wrap; }
 .bigcard .deplink { color: var(--accent); text-decoration: none; margin-right: 4px; }
 .bigcard .att { color: var(--dim); }
 .bigcard .when { margin-left: auto; }
-tr.row:hover { background: var(--panel); }
 tr.done td { color: var(--dim); }
 .pri0 { color: #f87171; font-weight: 700; } .pri1 { color: #fbbf24; }
 .pri3 { color: var(--dim); }
@@ -138,6 +140,7 @@ tr.done td { color: var(--dim); }
     <button id="vList">List</button>
   </div>
   <button class="primary" id="newTask">+ New task</button>
+  <input id="q" placeholder="search title/description…" style="width: 220px">
   <div class="spacer"></div>
   <span class="note" id="msg"></span>
   <div class="dot" id="live" title="auto-refresh"></div>
@@ -147,7 +150,7 @@ tr.done td { color: var(--dim); }
 <script>
 "use strict";
 let CFG = null, TASKS = [], PROJECT = null, VIEW = localStorage.atx_view || "board";
-let modalOpen = false, lastHash = "", EXPANDED = null;
+let modalOpen = false, lastHash = "", EXPANDED = null, QUERY = "";
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
@@ -160,6 +163,14 @@ async function api(path, opts = {}) {
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(d.error || r.status);
   return d;
+}
+
+function visibleTasks() {
+  if (!QUERY) return TASKS;
+  const q = QUERY.toLowerCase();
+  return TASKS.filter(t =>
+    (t.name || "").toLowerCase().includes(q) ||
+    (t.description || "").toLowerCase().includes(q));
 }
 function note(text, isErr) {
   const el = $("#msg"); el.textContent = text || "";
@@ -202,7 +213,7 @@ function render() {
 }
 function renderBoard(main) {
   main.innerHTML = `<div class="board">` + CFG.statuses.map(st => {
-    const ts = TASKS.filter(t => t.status === st);
+    const ts = visibleTasks().filter(t => t.status === st);
     return `<div class="col" data-status="${st}"><h2>${statusLabel(st)} <span class="n">(${ts.length})</span></h2>` +
       ts.map(t => card(t)).join("") + `</div>`;
   }).join("") + `</div>`;
@@ -216,7 +227,7 @@ function card(t) {
 }
 function renderList(main) {
   const order = {}; CFG.list_order.forEach((s, i) => order[s] = i);
-  const rows = [...TASKS].sort((a, b) => order[a.status] - order[b.status] || a.priority - b.priority || a.id - b.id);
+  const rows = [...visibleTasks()].sort((a, b) => order[a.status] - order[b.status] || a.priority - b.priority || a.id - b.id);
   main.innerHTML = `<div class="listwrap"><table>
     <tr><th>ID</th><th>Title</th><th>Status</th><th>Pri</th><th>Type</th><th>Blocked by</th><th>Owner</th><th>Created</th></tr>
     ${rows.map(t => `<tr class="row ${t.status === "done" ? "done" : ""}" data-id="${t.id}">
@@ -236,8 +247,8 @@ function bigCard(t) {
   return `<div class="bigcard" style="--sc:${SC(t.status)}" data-id="${t.id}">
     <div class="bt">#${t.id} · ${esc(t.name)}</div>
     <div class="m">${metaLine(t)}</div>
-    ${desc ? `<div class="sec"><span class="lab">description</span>${esc(desc)}</div>` : ""}
-    ${ev ? `<div class="sec"><span class="lab">evidence</span>${esc(ev)}</div>` : ""}
+    ${desc ? `<div class="sec"><span class="lab">description</span><div class="clamp">${esc(desc)}</div></div>` : ""}
+    ${ev ? `<div class="sec"><span class="lab">evidence</span><div class="clamp">${esc(ev)}</div></div>` : ""}
     <div class="foot">
       ${deps ? `<span class="lab">deps</span> ${deps}` : ""}
       ${t.attachments?.length ? `<span class="att">📎 ${t.attachments.length}</span>` : ""}
@@ -246,7 +257,7 @@ function bigCard(t) {
   </div>`;
 }
 function renderExpanded(main, status) {
-  const ts = TASKS.filter(t => t.status === status);
+  const ts = visibleTasks().filter(t => t.status === status);
   main.innerHTML = `<div class="expwrap">
     <div class="exphead">
       <button data-act="back">← Back to board</button>
@@ -490,8 +501,13 @@ async function boot() {
     const el = e.target.closest("[data-id]");
     if (el && !e.target.closest("button,a")) openTask(+el.dataset.id);
   });
+  $("#q").addEventListener("input", (e) => { QUERY = e.target.value.trim(); render(); });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !modalOpen && EXPANDED) { EXPANDED = null; render(); }
+    if (e.key !== "Escape") return;
+    if (document.activeElement === $("#q")) {  // Esc in search: clear it
+      $("#q").value = ""; QUERY = ""; render(); $("#q").blur(); return;
+    }
+    if (!modalOpen && EXPANDED) { EXPANDED = null; render(); }
   });
   setInterval(async () => {
     if (!modalOpen && !document.hidden && PROJECT) { try { await reload(); } catch {} }
