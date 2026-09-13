@@ -85,6 +85,9 @@ tr.row { cursor: pointer; }
 .bigcard:hover { outline: 1px solid var(--accent); }
 .bigcard .bt { font-size: 15px; font-weight: 700; word-break: break-word; }
 .bigcard .m { color: var(--dim); font-size: 12px; margin: 6px 0 2px; }
+.bigcard .sec { margin-top: 10px; font-size: 13px; flex: 1 1 0; min-height: 0; overflow: hidden; }
+.bigcard .clamp { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical;
+                  overflow: hidden; white-space: pre-wrap; }
 .bigcard .lab { display: block; color: var(--dim); font-size: 10px;
                 text-transform: uppercase; letter-spacing: .08em; margin-bottom: 2px; }
 .bigcard .deplink { color: var(--accent); text-decoration: none; margin-right: 4px; }
