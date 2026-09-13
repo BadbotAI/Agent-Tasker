@@ -103,11 +103,11 @@ attachment sha256 checksums on the way back in.
 |---|---|
 | `←`/`→` or `h`/`l` | select column |
 | `↑`/`↓` or `k`/`j` | select task |
-| `Enter` | full task detail (scroll with arrows) |
+| `Enter` | full task detail — `↑↓` selects a field, `e` edits it, `q` closes |
 | `m` | move task (status menu) |
 | `<`/`,` and `>`/`.` | shift task one column left/right |
 | `r` | manual reload (the board also auto-reloads when the db changes) |
-| `Enter` | full task detail — `↑↓` selects a field, `e` edits it, `q` closes |
+| `v` | switch board ↔ list view (priority table, same columns as `list`) |
 
 Cards are bordered mini-cards: a 2-line inverted title head in the status color,
 a rule, then a 4-line description/evidence body and a deps/blockers/ready meta

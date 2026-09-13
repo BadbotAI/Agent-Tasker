@@ -95,8 +95,7 @@ agenttasker export [PATH] [-a] [--no-attachments]   # portable JSON; attachments
 agenttasker import PATH [--mode merge|replace] [--dry-run]
 agenttasker rm REF                # permanent; refs in other tasks are scrubbed
 agenttasker projects
-agenttasker board                 # TUI; picks a project first when none is given
-agenttasker mcp                   # stdio MCP server
+agenttasker board                 # TUI; picks a project first when none is given; v: board/list
 ```
 
 Global flags (before or after the subcommand): `-p/--project NAME`, `--db PATH`.

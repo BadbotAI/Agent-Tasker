@@ -50,8 +50,8 @@ Board keys
   m                      move task to another status (menu)
   < or ,  /  > or .      move task one column left / right
   r                      manual reload
+  v                      switch board <-> list view (list: priority table)
   ?                      this help
-  q                      quit
 
 The board watches the database and auto-reloads when other agents or
 humans change tasks (CLI, MCP, or another TUI session).
@@ -85,6 +85,9 @@ class Board:
         self.offsets: dict[str, int] = {}
         self.done = False
         self.message = ""
+        self.view = "board"  # "board" | "list"
+        self.list_row = 0
+        self.list_off = 0
 
     # --- data
     def reload(self) -> None:
@@ -101,6 +104,7 @@ class Board:
                         self.col, self.row = ci, ri
                         break
         self.clamp_selection()
+        self.list_row = max(0, min(self.list_row, max(0, len(self.tasks) - 1)))
 
     def clamp_selection(self) -> None:
         self.col = max(0, min(self.col, len(STATUSES) - 1))
@@ -177,12 +181,70 @@ class Board:
 
     # --- drawing
     def draw(self, stdscr) -> None:
+        if self.view == "list":
+            self.draw_list(stdscr)
+            return
+        self.draw_board(stdscr)
+
+    def draw_list(self, stdscr) -> None:
+        """Flat priority-ordered table of every task in the project."""
+        stdscr.erase()
+        height, width = stdscr.getmaxyx()
+        _safe(stdscr, 0, 0, f" {self.project} — list view · priority order", curses.A_BOLD)
+        _safe(stdscr, 1, 0,
+              " ↑↓ select · Enter: details · v: board · q: quit  · auto-reload on db change",
+              curses.A_DIM)
+
+        tasks = self.list_tasks_sorted()
+        self.list_row = max(0, min(self.list_row, max(0, len(tasks) - 1)))
+
+        id_w, st_w, pri_w, ty_w, bl_w, cr_w = 6, 11, 3, 11, 14, 10
+        title_w = max(10, width - (id_w + st_w + pri_w + ty_w + bl_w + cr_w + 6))
+        header = (f"{'ID':<{id_w}} {'TITLE':<{title_w}} {'STATUS':<{st_w}} "
+                  f"{'PRI':<{pri_w}} {'TYPE':<{ty_w}} {'BLOCKED-BY':<{bl_w}} CREATED")
+        _safe(stdscr, 2, 0, header[: width - 1], curses.A_BOLD | curses.A_UNDERLINE)
+
+        dep_map = self.dep_status_map()
+        visible = height - 4
+        if self.list_row < self.list_off:
+            self.list_off = self.list_row
+        elif self.list_row >= self.list_off + visible:
+            self.list_off = self.list_row - visible + 1
+        self.list_off = max(0, min(self.list_off, max(0, len(tasks) - visible)))
+
+        for i in range(self.list_off, min(len(tasks), self.list_off + visible)):
+            t = tasks[i]
+            pending = unfinished_dep_ids(t, dep_map)
+            blocked = ",".join(f"#{p}" for p in pending[:2])
+            if t.blockers:
+                blocked = (blocked + "+" if blocked else "") + f"ext:{len(t.blockers)}"
+            row = (f"{t.id:<{id_w}} {t.name[:title_w - 1]:<{title_w}} {t.status:<{st_w}} "
+                   f"{priority_label(t.priority):<{pri_w}} {t.type:<{ty_w}} "
+                   f"{(blocked or '—'):<{bl_w}} {t.created_at[:10]}")
+            attr = 0
+            if i == self.list_row:
+                attr |= curses.A_REVERSE
+            elif t.status == DONE:
+                attr |= curses.A_DIM
+            _safe(stdscr, 3 + i - self.list_off, 0, row[: width - 1], attr)
+
+        if not tasks:
+            _safe(stdscr, 3, 0, " (no tasks)", curses.A_DIM)
+        more = " ↓ more" if self.list_off + visible < len(tasks) else ""
+        _safe(stdscr, height - 1, 0, f" {len(tasks)} task(s){more}", curses.A_DIM)
+        stdscr.noutrefresh()
+        curses.doupdate()
+
+    def list_tasks_sorted(self) -> list[Task]:
+        return sorted(self.tasks, key=lambda t: (t.priority, t.id))
+
+    def draw_board(self, stdscr) -> None:
         stdscr.erase()
         height, width = stdscr.getmaxyx()
         _safe(stdscr, 0, 0, f" {self.project} — agenttasker board", curses.A_BOLD)
         _safe(
             stdscr, 1, 0,
-            " ←→ column  ↑↓ task  Enter: details  m: move  </>: shift  ?: help  q: quit"
+            " ←→ column  ↑↓ task  Enter: details  m: move  </>: shift  v: list  ?: help  q: quit"
             "  · auto-reload on db change",
             curses.A_DIM,
         )
@@ -329,7 +391,11 @@ class Board:
     # --- input
     def handle(self, stdscr, ch: int) -> None:
         self.message = ""
-        if ch in (ord("q"), ord("Q")):
+        if ch in (ord("v"), ord("V")):  # cycle board <-> list
+            self.view = "list" if self.view == "board" else "board"
+        elif self.view == "list":
+            self.handle_list(stdscr, ch)
+        elif ch in (ord("q"), ord("Q")):
             self.done = True
         elif ch in (curses.KEY_LEFT, ord("h"), ord("H")):
             self.col = max(0, self.col - 1)
@@ -359,6 +425,29 @@ class Board:
             self.help_popup(stdscr)
         elif ch == curses.KEY_RESIZE:
             self.offsets.clear()
+
+
+    def handle_list(self, stdscr, ch: int) -> None:
+        tasks = self.list_tasks_sorted()
+        if ch in (ord("q"), ord("Q")):
+            self.done = True
+        elif ch in (curses.KEY_UP, ord("k"), ord("K")):
+            self.list_row = max(0, self.list_row - 1)
+        elif ch in (curses.KEY_DOWN, ord("j"), ord("J")):
+            self.list_row = min(max(0, len(tasks) - 1), self.list_row + 1)
+        elif ch == curses.KEY_NPAGE:
+            self.list_off = min(max(0, len(tasks) - 1), self.list_off + max(1, 10))
+            self.list_row = self.list_off
+        elif ch == curses.KEY_PPAGE:
+            self.list_off = max(0, self.list_off - max(1, 10))
+            self.list_row = self.list_off
+        elif ch in (curses.KEY_ENTER, 10, 13):
+            if 0 <= self.list_row < len(tasks):
+                self.view_popup(stdscr, tasks[self.list_row])
+        elif ch in (ord("r"), ord("R")):
+            self.reload()
+        elif ch == curses.KEY_RESIZE:
+            self.list_off = 0
 
     def shift(self, direction: int) -> None:
         task = self.selected()
