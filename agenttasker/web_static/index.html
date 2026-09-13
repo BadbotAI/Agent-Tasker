@@ -67,6 +67,31 @@ th { text-align: left; color: var(--dim); font-size: 12px; text-transform: upper
      position: sticky; top: 0; background: var(--bg); z-index: 1; }
 td { padding: 6px 8px; border-bottom: 1px solid var(--line); }
 tr.row { cursor: pointer; }
+
+/* expanded category view */
+.expwrap { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.exphead { position: sticky; top: 0; z-index: 2; display: flex; gap: 14px;
+           align-items: center; padding: 10px 14px; background: var(--bg);
+           border-bottom: 1px solid var(--line); }
+.exptitle { margin: 0; font-size: 15px; letter-spacing: .06em; text-transform: uppercase;
+            border-left: 4px solid var(--sc, var(--dim)); padding-left: 10px; }
+.exptitle .n { color: var(--dim); }
+.expgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+           gap: 14px; padding: 14px; align-items: start; }
+.bigcard { background: var(--panel); border: 1px solid var(--line);
+           border-left: 4px solid var(--sc, var(--dim)); border-radius: 10px;
+           padding: 14px 16px; cursor: pointer; }
+.bigcard:hover { outline: 1px solid var(--accent); }
+.bigcard .bt { font-size: 15px; font-weight: 700; word-break: break-word; }
+.bigcard .m { color: var(--dim); font-size: 12px; margin: 6px 0 2px; }
+.bigcard .sec { margin-top: 10px; font-size: 13px; white-space: pre-wrap; }
+.bigcard .lab { display: block; color: var(--dim); font-size: 10px;
+                text-transform: uppercase; letter-spacing: .08em; margin-bottom: 2px; }
+.bigcard .foot { display: flex; gap: 14px; align-items: baseline; margin-top: 12px;
+                 font-size: 12px; color: var(--dim); flex-wrap: wrap; }
+.bigcard .deplink { color: var(--accent); text-decoration: none; margin-right: 4px; }
+.bigcard .att { color: var(--dim); }
+.bigcard .when { margin-left: auto; }
 tr.row:hover { background: var(--panel); }
 tr.done td { color: var(--dim); }
 .pri0 { color: #f87171; font-weight: 700; } .pri1 { color: #fbbf24; }
@@ -122,7 +147,7 @@ tr.done td { color: var(--dim); }
 <script>
 "use strict";
 let CFG = null, TASKS = [], PROJECT = null, VIEW = localStorage.atx_view || "board";
-let modalOpen = false, lastHash = "";
+let modalOpen = false, lastHash = "", EXPANDED = null;
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
@@ -169,7 +194,9 @@ function blockedBy(t) {
 function render() {
   const main = $("#main");
   document.documentElement.style.setProperty("--proj", PROJECT);
-  if (VIEW === "list") renderList(main); else renderBoard(main);
+  if (VIEW === "list") renderList(main);
+  else if (EXPANDED) renderExpanded(main, EXPANDED);
+  else renderBoard(main);
   $("#vBoard").classList.toggle("on", VIEW === "board");
   $("#vList").classList.toggle("on", VIEW === "list");
 }
@@ -198,6 +225,36 @@ function renderList(main) {
       <td>${esc(blockedBy(t))}</td><td>${t.owner ? "@" + esc(t.owner) : "—"}</td>
       <td>${esc((t.created_at || "").slice(0, 10))}</td></tr>`).join("")}
   </table></div>`;
+}
+
+/* ---------- expanded category view ---------- */
+function bigCard(t) {
+  const desc = (t.description || "").trim();
+  const ev = (t.evidence || "").trim();
+  const deps = t.depends_on?.length
+    ? t.depends_on.map(i => `<a href="#" data-id="${i}" class="deplink">#${i}</a>`).join(" ") : "";
+  return `<div class="bigcard" style="--sc:${SC(t.status)}" data-id="${t.id}">
+    <div class="bt">#${t.id} · ${esc(t.name)}</div>
+    <div class="m">${metaLine(t)}</div>
+    ${desc ? `<div class="sec"><span class="lab">description</span>${esc(desc)}</div>` : ""}
+    ${ev ? `<div class="sec"><span class="lab">evidence</span>${esc(ev)}</div>` : ""}
+    <div class="foot">
+      ${deps ? `<span class="lab">deps</span> ${deps}` : ""}
+      ${t.attachments?.length ? `<span class="att">📎 ${t.attachments.length}</span>` : ""}
+      <span class="when">${esc((t.created_at || "").slice(0, 10))}</span>
+    </div>
+  </div>`;
+}
+function renderExpanded(main, status) {
+  const ts = TASKS.filter(t => t.status === status);
+  main.innerHTML = `<div class="expwrap">
+    <div class="exphead">
+      <button data-act="back">← Back to board</button>
+      <h2 class="exptitle" style="--sc:${SC(status)}">${statusLabel(status)}
+        <span class="n">(${ts.length})</span></h2>
+    </div>
+    <div class="expgrid">${ts.map(bigCard).join("") || `<span class="note">(no tasks)</span>`}</div>
+  </div>`;
 }
 
 /* ---------- modal ---------- */
@@ -376,10 +433,12 @@ function setProject(p) {
   reload();
 }
 function captureScroll() {
-  const s = { cols: {}, list: 0 };
+  const s = { cols: {}, list: 0, exp: 0 };
   document.querySelectorAll(".col").forEach(c => { s.cols[c.dataset.status] = c.scrollTop; });
   const lw = document.querySelector(".listwrap");
   if (lw) s.list = lw.scrollTop;
+  const exp = document.querySelector(".expwrap");
+  if (exp) s.exp = exp.scrollTop;
   return s;
 }
 function restoreScroll(s) {
@@ -388,6 +447,8 @@ function restoreScroll(s) {
   });
   const lw = document.querySelector(".listwrap");
   if (lw && s.list) lw.scrollTop = s.list;
+  const exp = document.querySelector(".expwrap");
+  if (exp && s.exp) exp.scrollTop = s.exp;
 }
 
 async function reload(keepModal) {
@@ -403,6 +464,7 @@ async function reload(keepModal) {
   }
   $("#live").classList.toggle("off", false);
 }
+
 async function boot() {
   CFG = await api("/api/config");
   $("#topbar").style.display = "flex";
@@ -414,12 +476,22 @@ async function boot() {
   const p = fromUrl || localStorage.atx_project ||
             (CFG.projects.some(x => x.name === CFG.default_project) ? CFG.default_project : null);
   if (p) setProject(p); else if (CFG.projects.length) showPicker();
-  $("#vBoard").onclick = () => { VIEW = "board"; localStorage.atx_view = VIEW; render(); };
-  $("#vList").onclick = () => { VIEW = "list"; localStorage.atx_view = VIEW; render(); };
+  $("#vBoard").onclick = () => { VIEW = "board"; EXPANDED = null; localStorage.atx_view = VIEW; render(); };
+  $("#vList").onclick = () => { VIEW = "list"; EXPANDED = null; localStorage.atx_view = VIEW; render(); };
   $("#newTask").onclick = () => PROJECT && openNew();
   $("#main").addEventListener("click", (e) => {
+    const dep = e.target.closest(".deplink");
+    if (dep) { e.preventDefault(); openTask(+dep.dataset.id); return; }
+    const head = e.target.closest("h2");
+    if (head && VIEW === "board" && head.parentElement?.dataset?.status) {
+      EXPANDED = head.parentElement.dataset.status; render(); return;
+    }
+    if (e.target.closest('[data-act="back"]')) { EXPANDED = null; render(); return; }
     const el = e.target.closest("[data-id]");
     if (el && !e.target.closest("button,a")) openTask(+el.dataset.id);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !modalOpen && EXPANDED) { EXPANDED = null; render(); }
   });
   setInterval(async () => {
     if (!modalOpen && !document.hidden && PROJECT) { try { await reload(); } catch {} }
