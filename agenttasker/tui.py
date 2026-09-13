@@ -35,6 +35,7 @@ from .core import (
     priority_label,
     status_label,
     unfinished_dep_ids,
+    utcnow,
 )
 
 CARD_HEIGHT = 11  # bordered card: border, 2-line title head, rule, 4-line body, meta, border (+gap)

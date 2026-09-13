@@ -121,11 +121,11 @@ tr.done td { color: var(--dim); }
 button.mini { padding: 1px 8px; font-size: 11px; }
 .trio { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;
         flex: 1 1 auto; min-height: 220px; }
-.colstack { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
-.ev { display: flex; gap: 8px; font-size: 12px; padding: 2px 0;
-      border-bottom: 1px solid var(--line); }
-.ev .evts { color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.ev .evkind { color: var(--accent); min-width: 52px; }
+.ev { padding: 4px 0; border-bottom: 1px solid var(--line); }
+.ev .evts { display: block; color: var(--dim); font-size: 11px;
+             font-variant-numeric: tabular-nums; }
+.ev .evtext { display: block; font-size: 13px; white-space: pre-wrap;
+              word-break: break-word; margin-top: 2px; }
 .pane { display: flex; flex-direction: column; min-height: 0;
         border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
 .pane > .fieldhead { flex: 0 0 auto; }
@@ -384,11 +384,9 @@ function openTask(id) {
       <div class="pane">
         <div class="fieldhead"><label>Evidence</label></div>
         <div class="content">${(t.evidence_rows || []).map(e => `
-          <div class="ev" data-evid="${e.id}">
+          <div class="ev">
             <span class="evts">${esc((e.ts || "").slice(0, 19).replace("T", " "))}</span>
-            <span style="flex:1;white-space:pre-wrap;word-break:break-word">${esc(e.text)}</span>
-            <button class="mini" data-act="edit_ev" data-id="${e.id}" title="edit">✎</button>
-            <button class="mini" data-act="del_ev" data-id="${e.id}" title="remove">✕</button>
+            <span class="evtext">${esc(e.text)}</span>
           </div>`).join("") || '<span class="note">(none)</span>'}</div>
         <div style="display:flex;gap:6px;margin-top:6px;flex:0 0 auto">
           <input id="f_append" placeholder="append a line…">
