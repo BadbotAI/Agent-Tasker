@@ -69,9 +69,9 @@ class ClaimTest(unittest.TestCase):
         first = self.store.append_evidence(self.task, "first finding")
         # simulate a second writer working from a stale snapshot
         second = self.store.append_evidence(first, "second finding")
-        self.assertIn("first finding", second.evidence)
-        self.assertIn("second finding", second.evidence)
-
+        entries = [e["text"] for e in self.store.evidence(second)]
+        self.assertIn("first finding", entries)
+        self.assertIn("second finding", entries)
 
 class PriorityTagsTest(unittest.TestCase):
     def setUp(self):
@@ -133,7 +133,9 @@ class ExportImportTest(unittest.TestCase):
                 self.assertEqual(first.status, "done")
                 self.assertEqual(first.priority, 0)
                 self.assertEqual(first.tags, ["infra"])
-                self.assertEqual(first.evidence, "did it")
+                with Store(Path(other_dir) / "tasks.db") as probe:
+                    ev = [e["text"] for e in probe.evidence(first)]
+                self.assertEqual(ev, ["did it"])
                 # dependency remapped to the new id
                 self.assertEqual(second.depends_on, [first.id])
                 self.assertEqual(second.affects, [first.id])
@@ -260,6 +262,92 @@ class EventLogTest(unittest.TestCase):
         self.store.update(t, name="renamed")                 # non-status field
         t = self.store.get("demo", t.id)
         self.assertEqual(self.store.events(t), [])
+
+
+class EvidenceTableTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+    def test_legacy_blob_migration(self):
+        import sqlite3
+
+        from agenttasker.db import connect
+
+        db_path = Path(self.tmp.name) / "legacy.db"
+        raw = sqlite3.connect(db_path)
+        raw.executescript("""
+            CREATE TABLE tasks (
+                project TEXT NOT NULL, id INTEGER NOT NULL,
+                name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'backlog',
+                description TEXT NOT NULL DEFAULT '',
+                evidence TEXT NOT NULL DEFAULT '',
+                blockers TEXT NOT NULL DEFAULT '[]', depends_on TEXT NOT NULL DEFAULT '[]',
+                affects TEXT NOT NULL DEFAULT '[]', owner TEXT NOT NULL DEFAULT '',
+                claimed_at TEXT NOT NULL DEFAULT '', priority INTEGER NOT NULL DEFAULT 2,
+                type TEXT NOT NULL DEFAULT 'task', tags TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                PRIMARY KEY (project, id)
+            );
+        """)
+        blob = (
+            "[2026-09-12T10:00:00+00:00] first entry\n\n"
+            "unstamped manual line\n\n"
+            "[2026-09-12T11:30:00Z] second entry"
+        )
+        raw.execute(
+            "INSERT INTO tasks (project,id,name,evidence,created_at,updated_at)"
+            " VALUES ('p',1,'migrated',?,'2026-09-12T09:00:00+00:00','2026-09-12T12:00:00+00:00')",
+            (blob,),
+        )
+        raw.commit()
+        raw.close()
+
+        with Store(db_path) as store:  # opening triggers the migration
+            entries = store.evidence(store.get("p", 1))
+        self.assertEqual([e["ts"] for e in entries],
+                         ["2026-09-12T10:00:00+00:00", "2026-09-12T12:00:00+00:00",
+                          "2026-09-12T11:30:00Z"])
+        self.assertEqual([e["text"] for e in entries],
+                         ["first entry", "unstamped manual line", "second entry"])
+
+        import sqlite3 as sq
+        cols = {r[1] for r in sq.connect(db_path).execute("PRAGMA table_info(tasks)")}
+        self.assertNotIn("evidence", cols)  # column dropped
+
+    def test_append_edit_delete_rows(self):
+        with Store(Path(self.tmp.name) / "t.db") as store:
+            t = store.add_task("p", "with evidence", evidence="seed analysis")
+            t = store.append_evidence(t, "second finding")
+            t = store.append_evidence(t, "third")
+            entries = store.evidence(t)
+            self.assertEqual([e["text"] for e in entries],
+                             ["seed analysis", "second finding", "third"])
+            t = store.edit_evidence(t, entries[1]["id"], "second finding (edited)")
+            self.assertEqual([e["text"] for e in store.evidence(t)],
+                             ["seed analysis", "second finding (edited)", "third"])
+            t = store.delete_evidence(t, entries[0]["id"])
+            self.assertEqual([e["text"] for e in store.evidence(t)],
+                             ["second finding (edited)", "third"])
+            # full replace via update(evidence=...) -> single fresh entry
+            t = store.update(t, evidence="reset")
+            self.assertEqual([e["text"] for e in store.evidence(t)], ["reset"])
+
+    def test_v1_export_imports_with_parsed_evidence(self):
+        with Store(Path(self.tmp.name) / "v1.db") as store:
+            t = store.add_task("p", "old format", evidence="imported entry")
+            payload = store.export_tasks("p")
+            # downgrade to v1 shape: evidence as a blob string
+            payload["version"] = 1
+            payload["tasks"][0]["evidence"] = "[2026-09-12T10:00:00+00:00] imported entry"
+            for task in payload["tasks"]:
+                task.pop("evidence_rows", None)
+            with tempfile.TemporaryDirectory() as other:
+                with Store(Path(other) / "in.db") as dest:
+                    dest.import_tasks(payload)
+                    got = dest.evidence(dest.list_tasks("p")[0])
+                    self.assertEqual([(e["ts"], e["text"]) for e in got],
+                                     [("2026-09-12T10:00:00+00:00", "imported entry")])
+
 
 
 class TaskTypeTest(unittest.TestCase):

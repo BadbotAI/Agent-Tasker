@@ -40,7 +40,7 @@ TASK_TYPES: tuple[str, ...] = ("task", "feature", "bugfix", "improvement", "chor
 DEFAULT_TYPE = "task"
 
 EXPORT_FORMAT = "agenttasker-export"
-EXPORT_VERSION = 1
+EXPORT_VERSION = 2
 
 _STATUS_ALIASES = {
     "inprogress": IN_PROGRESS,
@@ -245,7 +245,6 @@ class Task:
     name: str
     status: str = BACKLOG
     description: str = ""
-    evidence: str = ""
     blockers: list[str] = field(default_factory=list)   # free-form external blockers
     depends_on: list[int] = field(default_factory=list)  # hard deps: task ids
     affects: list[int] = field(default_factory=list)     # informational: task ids
@@ -265,7 +264,6 @@ class Task:
             name=row["name"],
             status=row["status"],
             description=row["description"],
-            evidence=row["evidence"],
             blockers=_decode_list(row["blockers"]),
             depends_on=_decode_list(row["depends_on"]),
             affects=_decode_list(row["affects"]),
@@ -291,7 +289,6 @@ class Task:
             "owner": self.owner,
             "claimed_at": self.claimed_at,
             "description": self.description,
-            "evidence": self.evidence,
             "blockers": list(self.blockers),
             "depends_on": list(self.depends_on),
             "affects": list(self.affects),
@@ -302,7 +299,7 @@ class Task:
 
 # --- store -------------------------------------------------------------------
 _UPDATABLE = (
-    "name", "status", "description", "evidence", "blockers",
+    "name", "status", "description", "blockers",
     "depends_on", "affects", "priority", "type", "tags",
 )
 
@@ -357,11 +354,11 @@ class Store:
             ).fetchone()[0]
             try:
                 cur = self.db.execute(
-                    "INSERT INTO tasks (project, id, name, status, description, evidence, blockers,"
+                    "INSERT INTO tasks (project, id, name, status, description, blockers,"
                     " depends_on, affects, owner, claimed_at, priority, type, tags,"
-                    " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
-                        project, next_id, name, status, description, evidence,
+                        project, next_id, name, status, description,
                         json.dumps([str(b).strip() for b in blockers if str(b).strip()]),
                         json.dumps(deps), json.dumps(links),
                         "", "", priority, type_, json.dumps(parse_tags(tags)), now, now,
@@ -372,6 +369,11 @@ class Store:
                 continue  # another writer took this id; loop allocates the next one
         if cur is None:
             raise TaskError(f"could not allocate a task id for project {project!r}")
+        if evidence.strip():
+            self.db.execute(
+                "INSERT INTO evidence (project, task_id, ts, text) VALUES (?,?,?,?)",
+                (project, next_id, now, evidence.strip()),
+            )
         self.db.commit()
         task = self.get_by_id(project, next_id)
         assert task is not None
@@ -420,7 +422,11 @@ class Store:
                 args.append(f'%"{tag.replace("%", "")}"%')
         if search:
             for term in search.split():
-                conds.append("(name LIKE ? OR description LIKE ? OR evidence LIKE ? OR tags LIKE ?)")
+                conds.append(
+                    "(name LIKE ? OR description LIKE ? OR tags LIKE ? OR EXISTS"
+                    " (SELECT 1 FROM evidence e WHERE e.project=tasks.project"
+                    " AND e.task_id=tasks.id AND e.text LIKE ?))"
+                )
                 like = f"%{term}%"
                 args.extend([like, like, like, like])
         if stale_hours is not None:
@@ -439,6 +445,12 @@ class Store:
         return tasks
 
     def update(self, task: Task, **changes) -> Task:
+        if "evidence" in changes:  # full replace -> evidence table rows
+            text = changes.pop("evidence")
+            updated = self.replace_evidence(task, text)
+            if not changes:
+                return updated
+            task = updated
         unknown = set(changes) - set(_UPDATABLE)
         if unknown:
             raise TaskError(f"cannot update field(s): {', '.join(sorted(unknown))}")
@@ -476,17 +488,99 @@ class Store:
         assert updated is not None
         return updated
 
+    # --- evidence (one row per entry) --------------------------------------
+
+    def evidence(self, task: Task) -> list[dict]:
+        """Evidence entries, oldest first: [{id, ts, text}]."""
+        rows = self.db.execute(
+            "SELECT id, ts, text FROM evidence WHERE project=? AND task_id=? ORDER BY id",
+            (task.project, task.id),
+        ).fetchall()
+        return [{"id": r["id"], "ts": r["ts"], "text": r["text"]} for r in rows]
+
     def append_evidence(self, task: Task, text: str) -> Task:
-        """Atomically append a timestamped evidence line (SQL-side concat; safe
-        against concurrent writers, unlike read-then-replace)."""
+        """Append one timestamped evidence entry (single INSERT — atomic)."""
         text = text.strip()
         if not text:
             raise TaskError("evidence text must not be empty")
-        stamp = utcnow().replace("+00:00", "Z")
-        separator = "" if not task.evidence.strip() else "\n\n"
+        now = utcnow()
         self.db.execute(
-            "UPDATE tasks SET evidence = evidence || ?, updated_at=? WHERE project=? AND id=?",
-            (f"{separator}[{stamp}] {text}", utcnow(), task.project, task.id),
+            "INSERT INTO evidence (project, task_id, ts, text) VALUES (?,?,?,?)",
+            (task.project, task.id, now, text),
+        )
+        self.db.execute(
+            "UPDATE tasks SET updated_at=? WHERE project=? AND id=?",
+            (now, task.project, task.id),
+        )
+        self.db.commit()
+        updated = self.get_by_id(task.project, task.id)
+        assert updated is not None
+        return updated
+
+    def replace_evidence(self, task: Task, text: str, ts: str | None = None) -> Task:
+        """Replace all evidence entries with a single new one (stamped now by
+        default). This is the `update -e` full-replace semantic."""
+        text = text.strip()
+        now = utcnow()
+        self.db.execute(
+            "DELETE FROM evidence WHERE project=? AND task_id=?", (task.project, task.id)
+        )
+        if text:
+            self.db.execute(
+                "INSERT INTO evidence (project, task_id, ts, text) VALUES (?,?,?,?)",
+                (task.project, task.id, ts or now, text),
+            )
+        self.db.execute(
+            "UPDATE tasks SET updated_at=? WHERE project=? AND id=?",
+            (now, task.project, task.id),
+        )
+        self.db.commit()
+        updated = self.get_by_id(task.project, task.id)
+        assert updated is not None
+        return updated
+
+    def edit_evidence(self, task: Task, entry_id: int, text: str) -> Task:
+        """Edit one evidence entry in place (keeps its timestamp)."""
+        text = text.strip()
+        if not text:
+            raise TaskError("evidence text must not be empty")
+        cur = self.db.execute(
+            "UPDATE evidence SET text=? WHERE project=? AND task_id=? AND id=?",
+            (text, task.project, task.id, entry_id),
+        )
+        if cur.rowcount == 0:
+            raise TaskError(f"no evidence entry #{entry_id} on {display_ref(task.project, task.id)}")
+        self.db.commit()
+        updated = self.get_by_id(task.project, task.id)
+        assert updated is not None
+        return updated
+
+    def delete_evidence(self, task: Task, entry_id: int) -> Task:
+        cur = self.db.execute(
+            "DELETE FROM evidence WHERE project=? AND task_id=? AND id=?",
+            (task.project, task.id, entry_id),
+        )
+        if cur.rowcount == 0:
+            raise TaskError(f"no evidence entry #{entry_id} on {display_ref(task.project, task.id)}")
+        self.db.commit()
+        updated = self.get_by_id(task.project, task.id)
+        assert updated is not None
+        return updated
+
+    def set_evidence_rows(self, task: Task, entries) -> Task:
+        """Replace all evidence rows with (ts, text) pairs, preserving order."""
+        self.db.execute(
+            "DELETE FROM evidence WHERE project=? AND task_id=?", (task.project, task.id)
+        )
+        for ts, text in entries:
+            if str(text).strip():
+                self.db.execute(
+                    "INSERT INTO evidence (project, task_id, ts, text) VALUES (?,?,?,?)",
+                    (task.project, task.id, ts, str(text).strip()),
+                )
+        self.db.execute(
+            "UPDATE tasks SET updated_at=? WHERE project=? AND id=?",
+            (utcnow(), task.project, task.id),
         )
         self.db.commit()
         updated = self.get_by_id(task.project, task.id)
@@ -673,6 +767,66 @@ class Store:
         ).fetchall()
         return [{"ts": r["ts"], "kind": r["kind"], "detail": r["detail"]} for r in rows]
 
+    def last_activity(self, task: Task) -> str:
+        """Latest of: last evidence push, last status/ownership event."""
+        candidates = []
+        row = self.db.execute(
+            "SELECT MAX(ts) AS m FROM evidence WHERE project=? AND task_id=?",
+            (task.project, task.id),
+        ).fetchone()
+        if row and row["m"]:
+            candidates.append(row["m"])
+        row = self.db.execute(
+            "SELECT MAX(ts) AS m FROM events WHERE project=? AND task_id=?",
+            (task.project, task.id),
+        ).fetchone()
+        if row and row["m"]:
+            candidates.append(row["m"])
+        return max(candidates) if candidates else task.updated_at
+
+    def active_since(self, task: Task) -> str:
+        """When the task entered its current in_progress/in_review stretch.
+
+        Replaying the event log: the timestamp of the transition INTO
+        {in_progress, in_review} that started the current contiguous active
+        window (so moving in_progress -> in_review does NOT reset it).
+        Falls back to claimed_at for tasks claimed before events existed."""
+        if task.status not in (IN_PROGRESS, IN_REVIEW):
+            return ""
+        rows = self.db.execute(
+            "SELECT ts, kind, detail FROM events WHERE project=? AND task_id=? ORDER BY id",
+            (task.project, task.id),
+        ).fetchall()
+        active_since = ""
+        status = ""  # replayed; unknown before the first event
+        for row in rows:
+            if row["kind"] == "status":
+                new = row["detail"].split("->")[-1].strip()
+                if new in (IN_PROGRESS, IN_REVIEW) and status not in (IN_PROGRESS, IN_REVIEW):
+                    active_since = row["ts"]  # entering the active window
+                elif new not in (IN_PROGRESS, IN_REVIEW):
+                    active_since = ""  # left the active window
+                status = new
+            elif row["kind"] == "claim":
+                active_since = row["ts"]  # claim -> in_progress
+                status = IN_PROGRESS
+        if not active_since and task.claimed_at:
+            return task.claimed_at
+        return active_since
+
+    def active_hours(self, task: Task) -> float | None:
+        """Hours since the current active stretch began (None when not active)."""
+        since = self.active_since(task)
+        if not since:
+            return None
+        try:
+            started = datetime.fromisoformat(since.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - started).total_seconds() / 3600.0
+
     # --- attachments -----------------------------------------------------------
     # Files live on disk under <db_dir>/attachments/<project>/<task_id>/<hash>-<name>,
     # content-addressed by sha256; the table holds the metadata.
@@ -766,13 +920,15 @@ class Store:
         self, project: str | None = None, *, include_attachments: bool = True
     ) -> dict:
         """Portable, versioned snapshot. Dependencies are exported as local ids;
-        attachments are embedded base64-encoded (sha256-verified on import)."""
+        attachments are embedded base64-encoded (sha256-verified on import);
+        evidence is one entry per row with its stored timestamp."""
         import base64
 
         tasks_out = []
         for task in self.list_tasks(project):
             data = task.to_dict()
             data["local_id"] = task.id
+            data["evidence_rows"] = self.evidence(task)
             if include_attachments:
                 data["attachments"] = [
                     {
@@ -804,8 +960,8 @@ class Store:
         if not isinstance(payload, dict) or payload.get("format") != EXPORT_FORMAT:
             raise TaskError("not an agenttasker export (missing format marker)")
         version = payload.get("version")
-        if version != EXPORT_VERSION:
-            raise TaskError(f"unsupported export version {version!r} (expected {EXPORT_VERSION})")
+        if version not in (1, EXPORT_VERSION):
+            raise TaskError(f"unsupported export version {version!r} (expected 1 or {EXPORT_VERSION})")
         if mode not in ("merge", "replace"):
             raise TaskError(f"unknown import mode {mode!r} (expected merge or replace)")
         incoming = payload.get("tasks")
@@ -850,12 +1006,24 @@ class Store:
                     prj, name,
                     description=item.get("description", ""),
                     status=item.get("status", BACKLOG),
-                    evidence=item.get("evidence", ""),
                     blockers=item.get("blockers", []),
                     priority=item.get("priority", DEFAULT_PRIORITY),
                     type=item.get("type", DEFAULT_TYPE),
                     tags=item.get("tags", []),
                 )
+                # evidence: v2 ships rows; v1 ships a blob (parse it)
+                rows = item.get("evidence_rows")
+                if rows is None and item.get("evidence"):
+                    from .db import parse_evidence_blob
+                    rows = [{"ts": ts, "text": text} for ts, text
+                            in parse_evidence_blob(item["evidence"],
+                                                   item.get("created_at") or utcnow())]
+                for entry in rows or []:
+                    self.db.execute(
+                        "INSERT INTO evidence (project, task_id, ts, text) VALUES (?,?,?,?)",
+                        (prj, created.id, entry.get("ts") or utcnow(),
+                         str(entry.get("text", "")).strip()),
+                    )
                 if item.get("owner"):
                     self.db.execute(
                         "UPDATE tasks SET owner=?, claimed_at=? WHERE project=? AND id=?",

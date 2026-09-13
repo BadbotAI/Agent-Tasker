@@ -263,6 +263,8 @@ def _task_json(store: Store, task: Task) -> dict:
     data["unfinished_deps"] = unfinished_dep_ids(task, dep_map)
     data["blocked"] = is_blocked(task, dep_map)
     data["ready"] = is_ready(task, dep_map)
+    data["evidence"] = store.evidence(task)
+    data["last_activity"] = store.last_activity(task)
     return data
 
 
@@ -339,7 +341,7 @@ def cmd_show(args, store: Store) -> int:
         print(jsonlib.dumps(_task_json(store, task), indent=2))
         return 0
     print(render.detail(task, _project_map(store, project),
-                        attachments=store.list_attachments(task)))
+                        attachments=store.list_attachments(task), store=store))
     return 0
 
 
@@ -404,7 +406,7 @@ def cmd_update(args, store: Store) -> int:
     updated = store.update(task, **changes) if changes else task
     print(f"Updated {display_ref(project, updated.id)}")
     print()
-    print(render.detail(updated, _project_map(store, project)))
+    print(render.detail(updated, _project_map(store, project), store=store))
     return 0
 
 

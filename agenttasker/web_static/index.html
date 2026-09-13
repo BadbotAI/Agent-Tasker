@@ -269,14 +269,15 @@ function renderAgents(main) {
   const rows = [...visibleTasks()].filter(t => t.owner)
     .sort((a, b) => a.owner.localeCompare(b.owner) || a.priority - b.priority || a.id - b.id);
   main.innerHTML = `<div class="listwrap"><table>
-    <tr><th>ID</th><th>Owner</th><th>Title</th><th>Status</th><th>Pri</th><th>Type</th><th>Claimed</th><th>Age</th></tr>
+    <tr><th>ID</th><th>Owner</th><th>Title</th><th>Status</th><th>Pri</th><th>Type</th><th>Claimed</th><th>Spent</th><th>Updated</th></tr>
     ${rows.map(t => `<tr class="row" data-id="${t.id}">
       <td>${t.id}</td><td>@${esc(t.owner)}</td><td>${esc(t.name)}</td>
       <td>${statusLabel(t.status)}</td>
       <td class="pri${t.priority}">${priLabel(t.priority)}</td><td>${esc(t.type)}</td>
-      <td>${esc((t.claimed_at || "").slice(0, 19).replace("T", " "))}</td>
-      <td>${t.claim_age_hours != null ? t.claim_age_hours.toFixed(1) + "h" : "—"}</td></tr>`).join("")
-      || `<tr><td colspan="8" class="note">no active claims</td></tr>`}
+      <td>${esc((t.claimed_at || "").slice(0, 16).replace("T", " "))}</td>
+      <td>${t.active_hours != null ? t.active_hours.toFixed(1) + "h" : "—"}</td>
+      <td>${esc((t.last_activity || "").slice(0, 16).replace("T", " "))}</td></tr>`).join("")
+      || `<tr><td colspan="9" class="note">no active claims</td></tr>`}
   </table></div>`;
 }
 
@@ -381,11 +382,14 @@ function openTask(id) {
           : `<div class="content">${esc(t.description) || '<span class="note">(none)</span>'}</div>`}
       </div>
       <div class="pane">
-        <div class="fieldhead"><label>Evidence</label>
-          <button class="mini" data-act="${EDIT.has("evidence") ? "editdone" : "edit"}" data-k="evidence">${EDIT.has("evidence") ? "done" : "edit"}</button></div>
-        ${EDIT.has("evidence")
-          ? `<textarea id="f_evid">${esc(t.evidence)}</textarea>`
-          : `<div class="content">${esc(t.evidence) || '<span class="note">(none)</span>'}</div>`}
+        <div class="fieldhead"><label>Evidence</label></div>
+        <div class="content">${(t.evidence_rows || []).map(e => `
+          <div class="ev" data-evid="${e.id}">
+            <span class="evts">${esc((e.ts || "").slice(0, 19).replace("T", " "))}</span>
+            <span style="flex:1;white-space:pre-wrap;word-break:break-word">${esc(e.text)}</span>
+            <button class="mini" data-act="edit_ev" data-id="${e.id}" title="edit">✎</button>
+            <button class="mini" data-act="del_ev" data-id="${e.id}" title="remove">✕</button>
+          </div>`).join("") || '<span class="note">(none)</span>'}</div>
         <div style="display:flex;gap:6px;margin-top:6px;flex:0 0 auto">
           <input id="f_append" placeholder="append a line…">
           <button class="mini" data-act="append">Append</button></div>
@@ -438,6 +442,18 @@ function openTask(id) {
         await api(base, {method: "PATCH", body: {append_evidence: text}});
         await reload(); openTask(id); note("evidence appended");
       }
+      if (act === "edit_ev") {
+        const entry = t.evidence_rows.find(x => x.id === +e.target.dataset.id);
+        const next = prompt("Edit evidence entry:", entry?.text || "");
+        if (next != null && next.trim()) {
+          await api(base, {method: "PATCH", body: {edit_evidence: {id: +e.target.dataset.id, text: next}}});
+          await reload(); openTask(id);
+        }
+      }
+      if (act === "del_ev") {
+        await api(base, {method: "PATCH", body: {delete_evidence: +e.target.dataset.id}});
+        await reload(); openTask(id); note("entry removed");
+      }
       if (act === "upload") {
         const f = $("#f_file").files[0]; if (!f) return;
         const b64 = await new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.readAsDataURL(f); });
@@ -472,7 +488,6 @@ async function save(t) {
   body.type = $("#f_type").value;
   const tags = val("#f_tags"); if (tags !== null) body.tags = tags.split(",").map(s => s.trim()).filter(Boolean);
   const desc = val("#f_desc"); if (desc !== null) body.description = desc;
-  const evid = val("#f_evid"); if (evid !== null) body.evidence = evid;
   const blockers = val("#f_blockers"); if (blockers !== null)
     body.blockers = blockers.split(/[,;\n]/).map(s => s.trim()).filter(Boolean);
   const deps = val("#f_deps"); if (deps !== null) body.depends_on = deps.split(",").map(s => s.trim()).filter(Boolean);

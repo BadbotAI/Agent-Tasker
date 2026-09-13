@@ -53,6 +53,9 @@ def _task_payload(store: Store, task) -> dict:
         for a in store.list_attachments(task)
     ]
     data["events"] = store.events(task, 20)
+    data["evidence_rows"] = store.evidence(task)
+    data["last_activity"] = store.last_activity(task)
+    data["active_hours"] = round(h, 2) if (h := store.active_hours(task)) is not None else None
     return data
 
 
@@ -220,6 +223,12 @@ def build_handler(store_path: Path | None, default_project: str | None):
                 else:
                     if body.get("append_evidence"):
                         task = store.append_evidence(task, body["append_evidence"])
+                    if body.get("edit_evidence") is not None:
+                        edit = body["edit_evidence"] or {}
+                        task = store.edit_evidence(task, int(edit.get("id", 0)),
+                                                   edit.get("text", ""))
+                    if body.get("delete_evidence") is not None:
+                        task = store.delete_evidence(task, int(body["delete_evidence"]))
                     changes = {}
                     for key in ("name", "description", "evidence", "status", "priority", "type"):
                         if key in body and body[key] is not None:

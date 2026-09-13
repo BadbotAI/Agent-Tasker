@@ -67,7 +67,8 @@ def task_line(task: Task, by_id: dict[int, Task], show_project: bool = False) ->
     return f"{prefix}#{task.id:<4} {task.status:<11} {task.name}{flag_text}"
 
 
-def detail(task: Task, by_id: dict[int, Task], attachments: list | None = None) -> str:
+def detail(task: Task, by_id: dict[int, Task], attachments: list | None = None,
+           store=None) -> str:
     """Full task detail with computed dependency state."""
     lines: list[str] = [
         f"{display_ref(task.project, task.id)}  {task.name}",
@@ -85,9 +86,10 @@ def detail(task: Task, by_id: dict[int, Task], attachments: list | None = None) 
         lines.append("Description:")
         lines.append(_indent(task.description))
 
-    if task.evidence:
+    entries = store.evidence(task) if store else []
+    if entries:
         lines.append("Evidence / pre-task analysis:")
-        lines.append(_indent(task.evidence))
+        lines.extend(f"  [{e['ts'][:19]}] {e['text']}" for e in entries)
 
     lines.append("Blockers (external):")
     if task.blockers:

@@ -96,6 +96,11 @@ class Board:
         keep_id = selected.id if selected is not None else None
         self.tasks = self.store.list_tasks(self.project)
         self.by_id = {t.id: t for t in self.tasks}
+        self.evidence_tail = {
+            t.id: entries[-1]["text"]
+            for t in self.tasks
+            if (entries := self.store.evidence(t))
+        }
         self.cols = {s: [t for t in self.tasks if t.status == s] for s in STATUSES}
         if keep_id is not None:
             for ci, status in enumerate(STATUSES):
@@ -387,7 +392,7 @@ class Board:
 
         # body: description/evidence excerpt (4 lines) + deps/blockers/ready meta
         body_attr = curses.A_REVERSE if selected else 0  # full-contrast body text
-        body = task.description.strip() or task.evidence.strip()
+        body = task.description.strip() or self.evidence_tail.get(task.id, "")
         excerpt = (
             textwrap.wrap(body, width=inner, max_lines=4, placeholder=" …") if body else []
         )
@@ -694,7 +699,8 @@ class Board:
             block("description", "DESCRIPTION",
                   [("─", 0)] + [(l, 0) for l in (task.description.splitlines() or ["(none)"])]),
             block("evidence", "EVIDENCE / PRE-TASK ANALYSIS",
-                  [(l, 0) for l in (task.evidence.splitlines() or ["(none)"])]),
+                  [(f"[{e['ts'][:19]}] {e['text']}", dim)
+                   for e in self.store.evidence(task)] or [("(none)", dim)]),
             block("blockers", "BLOCKERS (EXTERNAL)",
                   [(f"• {b}", alert) for b in task.blockers] or [("(none)", dim)]),
             block("depends_on", "DEPENDS ON", dep_lines(task.depends_on, True)),
@@ -758,11 +764,22 @@ class Board:
             return self.store.update(
                 task, blockers=[l.strip() for l in text.splitlines() if l.strip()]
             )
-        if key in ("description", "evidence"):
-            text = self._edit_in_editor(getattr(task, key))
+        if key == "evidence":
+            # edit renders rows as "[ts] text" lines; timestamps round-trip
+            entries = self.store.evidence(task)
+            rendered = "\n".join(f"[{e['ts']}] {e['text']}" for e in entries)
+            text = self._edit_in_editor(rendered)
             if text is None:
                 return None
-            return self.store.update(task, **{key: text.rstrip("\n")})
+            from .db import parse_evidence_blob
+            parsed = parse_evidence_blob(text, utcnow())
+            self.store.set_evidence_rows(task, parsed)
+            return self.store.get(task.project, task.id)
+        if key == "description":
+            text = self._edit_in_editor(task.description)
+            if text is None:
+                return None
+            return self.store.update(task, description=text.rstrip("\n"))
         return None
 
     def _input_box(self, stdscr, title: str, initial: str = "") -> str | None:
