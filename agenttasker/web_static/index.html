@@ -103,7 +103,7 @@ tr.done td { color: var(--dim); }
            align-items: flex-start; justify-content: center; padding: 40px 16px;
            overflow-y: auto; z-index: 10; }
 .modal { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-         width: 900px; max-width: 100%; max-height: 92vh; padding: 0;
+         width: 80vw; max-width: 100%; max-height: 92vh; padding: 0;
          display: flex; flex-direction: column; }
 .modal .head { display: flex; gap: 8px; align-items: center; padding: 12px 16px;
                border-bottom: 1px solid var(--line); flex-wrap: wrap; flex: 0 0 auto; }
@@ -329,7 +329,8 @@ function openTask(id) {
       <div><div class="fieldhead"><label>Type</label></div>
         <select id="f_type">${opt(CFG.types, t.type)}</select></div>
       <div><div class="fieldhead"><label>Owner</label></div>
-        <div class="static" style="display:flex;gap:6px;align-items:center">${ownerBits}
+        <div class="static">${ownerBits}</div>
+        <div style="display:flex;gap:8px;margin-top:4px">
           <button class="mini" data-act="claim">claim</button>
           <button class="mini" data-act="release">release</button></div></div>
       ${fld("tags", "Tags", t.tags.join(", "), `<input id="f_tags" value="${esc(t.tags.join(", "))}" placeholder="comma-separated">`)}
