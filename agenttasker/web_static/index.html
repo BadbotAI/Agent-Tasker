@@ -176,7 +176,7 @@ function render() {
 function renderBoard(main) {
   main.innerHTML = `<div class="board">` + CFG.statuses.map(st => {
     const ts = TASKS.filter(t => t.status === st);
-    return `<div class="col"><h2>${statusLabel(st)} <span class="n">(${ts.length})</span></h2>` +
+    return `<div class="col" data-status="${st}"><h2>${statusLabel(st)} <span class="n">(${ts.length})</span></h2>` +
       ts.map(t => card(t)).join("") + `</div>`;
   }).join("") + `</div>`;
 }
@@ -375,14 +375,32 @@ function setProject(p) {
   location.hash = "";
   reload();
 }
+function captureScroll() {
+  const s = { cols: {}, list: 0 };
+  document.querySelectorAll(".col").forEach(c => { s.cols[c.dataset.status] = c.scrollTop; });
+  const lw = document.querySelector(".listwrap");
+  if (lw) s.list = lw.scrollTop;
+  return s;
+}
+function restoreScroll(s) {
+  document.querySelectorAll(".col").forEach(c => {
+    if (s.cols[c.dataset.status] != null) c.scrollTop = s.cols[c.dataset.status];
+  });
+  const lw = document.querySelector(".listwrap");
+  if (lw && s.list) lw.scrollTop = s.list;
+}
+
 async function reload(keepModal) {
   if (!PROJECT) return;
   const d = await api("/api/tasks?project=" + encodeURIComponent(PROJECT));
   TASKS = d.tasks;
   const h = JSON.stringify(TASKS);
   const changed = h !== lastHash; lastHash = h;
-  render();
-  if (changed && modalOpen && !keepModal) { /* keep modal open; views refresh behind */ }
+  if (changed) {  // re-render only when data actually changed; keep scroll positions
+    const scroll = captureScroll();
+    render();
+    restoreScroll(scroll);
+  }
   $("#live").classList.toggle("off", false);
 }
 async function boot() {
