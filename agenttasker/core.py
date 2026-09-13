@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -349,19 +350,30 @@ class Store:
         deps = self._validate_refs(project, depends_on)
         links = self._validate_refs(project, affects)
         now = utcnow()
-        cur = self.db.execute(
-            "INSERT INTO tasks (project, name, status, description, evidence, blockers,"
-            " depends_on, affects, owner, claimed_at, priority, type, tags,"
-            " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                project, name, status, description, evidence,
-                json.dumps([str(b).strip() for b in blockers if str(b).strip()]),
-                json.dumps(deps), json.dumps(links),
-                "", "", priority, type_, json.dumps(parse_tags(tags)), now, now,
-            ),
-        )
+        cur = None
+        for _ in range(8):  # per-project allocation; retry on concurrent writer races
+            next_id = self.db.execute(
+                "SELECT COALESCE(MAX(id), 0) + 1 FROM tasks WHERE project=?", (project,)
+            ).fetchone()[0]
+            try:
+                cur = self.db.execute(
+                    "INSERT INTO tasks (project, id, name, status, description, evidence, blockers,"
+                    " depends_on, affects, owner, claimed_at, priority, type, tags,"
+                    " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        project, next_id, name, status, description, evidence,
+                        json.dumps([str(b).strip() for b in blockers if str(b).strip()]),
+                        json.dumps(deps), json.dumps(links),
+                        "", "", priority, type_, json.dumps(parse_tags(tags)), now, now,
+                    ),
+                )
+                break
+            except sqlite3.IntegrityError:
+                continue  # another writer took this id; loop allocates the next one
+        if cur is None:
+            raise TaskError(f"could not allocate a task id for project {project!r}")
         self.db.commit()
-        task = self.get_by_id(project, cur.lastrowid)
+        task = self.get_by_id(project, next_id)
         assert task is not None
         return task
 
@@ -454,7 +466,8 @@ class Store:
         row_values = [json.dumps(v) if isinstance(v, list) else v for v in values.values()]
         assignments = ", ".join(f"{k}=?" for k in values)
         self.db.execute(
-            f"UPDATE tasks SET {assignments} WHERE id=?", (*row_values, task.id)
+            f"UPDATE tasks SET {assignments} WHERE project=? AND id=?",
+            (*row_values, task.project, task.id),
         )
         self.db.commit()
         updated = self.get_by_id(task.project, task.id)
@@ -553,7 +566,9 @@ class Store:
     def delete(self, task: Task) -> list[str]:
         """Delete a task, its attachments, and scrub refs in other tasks."""
         self.delete_task_files(task)
-        self.db.execute("DELETE FROM tasks WHERE id=?", (task.id,))
+        self.db.execute(
+            "DELETE FROM tasks WHERE project=? AND id=?", (task.project, task.id)
+        )
         notes: list[str] = []
         for other in self.list_tasks(task.project):
             patch: dict[str, list] = {}

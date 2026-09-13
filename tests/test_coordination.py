@@ -261,6 +261,81 @@ class TaskTypeTest(unittest.TestCase):
             with Store(Path(other) / "tasks.db") as dest:
                 dest.import_tasks(payload)
                 self.assertEqual(dest.list_tasks("proj")[0].type, "bugfix")
+
+
+class PerProjectIdTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_ids_are_dense_and_per_project(self):
+        with Store(Path(self.tmp.name) / "tasks.db") as store:
+            a1 = store.add_task("alpha", "one")
+            a2 = store.add_task("alpha", "two")
+            b1 = store.add_task("beta", "other")
+            self.assertEqual((a1.id, a2.id, b1.id), (1, 2, 1))
+            # deletion leaves a hole; the next id reuses the max+1 rule per project
+            store.delete(a2)
+            a3 = store.add_task("alpha", "three")
+            self.assertEqual(a3.id, 2)
+
+    def test_legacy_global_id_migration(self):
+        import sqlite3
+
+        # build a legacy database: single-column autoincrement pk, global ids
+        db_path = Path(self.tmp.name) / "legacy.db"
+        raw = sqlite3.connect(db_path)
+        raw.executescript("""
+            CREATE TABLE tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project TEXT NOT NULL, name TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'backlog',
+                description TEXT NOT NULL DEFAULT '',
+                evidence TEXT NOT NULL DEFAULT '',
+                blockers TEXT NOT NULL DEFAULT '[]',
+                depends_on TEXT NOT NULL DEFAULT '[]',
+                affects TEXT NOT NULL DEFAULT '[]',
+                owner TEXT NOT NULL DEFAULT '',
+                claimed_at TEXT NOT NULL DEFAULT '',
+                priority INTEGER NOT NULL DEFAULT 2,
+                type TEXT NOT NULL DEFAULT 'task',
+                tags TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project TEXT NOT NULL, task_id INTEGER NOT NULL,
+                filename TEXT NOT NULL, relpath TEXT NOT NULL,
+                size INTEGER NOT NULL, sha256 TEXT NOT NULL, created_at TEXT NOT NULL
+            );
+        """)
+        now = "2026-09-13T00:00:00+00:00"
+        # alpha: global ids 2,5 with 5 depending on 2; beta: global id 3
+        raw.execute("INSERT INTO tasks (project,name,status,depends_on,created_at,updated_at)"
+                    " VALUES ('alpha','first','todo','[]',?,?)", (now, now))       # id 1
+        raw.execute("INSERT INTO tasks (project,name,status,created_at,updated_at)"
+                    " VALUES ('beta','other','todo',?,?)", (now, now))             # id 2
+        raw.execute("INSERT INTO tasks (project,name,status,depends_on,created_at,updated_at)"
+                    " VALUES ('alpha','second','backlog','[1]',?,?)", (now, now))  # id 3
+        raw.execute("INSERT INTO attachments (project,task_id,filename,relpath,size,sha256,created_at)"
+                    " VALUES ('alpha',3,'f.txt','alpha/3/x',3,'abc','2026')")      # on alpha#3
+        raw.commit()
+        raw.close()
+
+        with Store(db_path) as store:  # opening triggers the migration
+            alpha = {t.name: t for t in store.list_tasks("alpha")}
+            beta = store.list_tasks("beta")
+            self.assertEqual((alpha["first"].id, alpha["second"].id), (1, 2))  # dense per project
+            self.assertEqual(beta[0].id, 1)
+            second = alpha["second"]
+            self.assertEqual(second.depends_on, [1])          # remapped from old id 1 -> new 1
+            atts = store.list_attachments(second)
+            self.assertEqual([(a["filename"], a["id"]) for a in atts], [("f.txt", 1)])
+            # a second open is a no-op (idempotent)
+        with Store(db_path) as store2:
+            self.assertEqual(sorted(t.id for t in store2.list_tasks("alpha")), [1, 2])
+
+
 class ListOrderTest(unittest.TestCase):
     """The list view orders by status (todo, backlog, deferred, in-flight, done), then priority."""
 
