@@ -21,10 +21,8 @@ Agents and humans share one board via the CLI/MCP tools and the TUI (`agenttaske
 
 - **Statuses** (board order): `deferred → backlog → todo → in_progress → in_review → done`
 - **Task fields**: name, description, `evidence` (analysis recorded *before* starting),
-  `blockers` (free-text external impediments, e.g. "waiting on vendor key"),
-  `depends_on` (task ids that must be `done` first), `affects` (task ids this work touches),
-  `priority` (`P0` urgent … `P3` low, default `P2`), `tags` (workstream labels),
-  `owner` (atomic claim), attachments (any binary, stored sha256-addressed).
+  `priority` (`P0` urgent … `P3` low, default `P2`), `type`
+  (`task`|`feature`|`bugfix`|`improvement`|`chore`), `tags` (workstream labels),
 - **Refs**: `12` or `ProjectName-12` within the current project.
 - **Derived state**:
   - *ready* = status `backlog`/`todo` AND unclaimed-or-yours AND no blockers AND all `depends_on` are `done`.
@@ -75,14 +73,15 @@ decide deliberately whether they stay parked.
 
 Both `agenttasker` and the short alias `atx` invoke the same tool; examples use
 `agenttasker` for clarity.
-```
-agenttasker add "Name" [-d DESC] [-s STATUS] [-e EVIDENCE] [--priority P0-P3] [--tag TAG]...
+agenttasker add "Name" [-d DESC] [-s STATUS] [-e EVIDENCE] [--priority P0-P3]
+                     [--type task|feature|bugfix|improvement|chore] [--tag TAG]...
                      [--blocker TEXT]... [--dep REF]... [--affects REF]...
 agenttasker ls [-s STATUS]... [--priority P0-P3]... [--tag TAG] [--search TEXT]
                [--ready] [--blocked] [--stale [HOURS]] [-a] [--json]
+agenttasker list [-a] [--json]      # flat table by priority: id title status pri type blocked-by created
 agenttasker show REF [--json]
 agenttasker update REF [--name N] [-d D] [-e E] [--append-evidence TEXT]
-                       [--priority P] [--tag T]... [--blocker T]... [--dep R]... [--affects R]...
+                       [--priority P] [--type T] [--tag T]... [--blocker T]... [--dep R]... [--affects R]...
 agenttasker claim REF --owner NAME [--force]     # atomic; also sets in_progress
 agenttasker release REF [--owner NAME] [--force]
 agenttasker handoff REF --to NAME [--from NAME] [--force]
@@ -96,7 +95,7 @@ agenttasker export [PATH] [-a] [--no-attachments]   # portable JSON; attachments
 agenttasker import PATH [--mode merge|replace] [--dry-run]
 agenttasker rm REF                # permanent; refs in other tasks are scrubbed
 agenttasker projects
-agenttasker board                 # TUI (humans): arrows navigate, Enter details+edit, m moves
+agenttasker board                 # TUI; picks a project first when none is given
 agenttasker mcp                   # stdio MCP server
 ```
 

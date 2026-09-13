@@ -69,6 +69,7 @@ def build_server():
         depends_on: Optional[list[str]] = None,
         affects: Optional[list[str]] = None,
         priority: str = "P2",
+        type: str = "task",
         tags: Optional[list[str]] = None,
     ) -> str:
         """Create a task in the project board.
@@ -83,6 +84,7 @@ def build_server():
             depends_on: task refs this task depends on ('12' or 'Project-12').
             affects: task refs whose outcome this work touches.
             priority: P0 (urgent) .. P3 (default P2). Ready lists sort by this.
+            type: task type: task|feature|bugfix|improvement|chore.
             tags: workstream/labels.
         """
         try:
@@ -92,7 +94,7 @@ def build_server():
                     prj, name,
                     description=description, status=status, evidence=evidence,
                     blockers=blockers or [], depends_on=depends_on or [], affects=affects or [],
-                    priority=priority, tags=tags or [],
+                    priority=priority, type=type, tags=tags or [],
                 )
                 return (
                     f"added {prj}-{task.id} [{task.status}] {task.name}\n"
@@ -169,6 +171,7 @@ def build_server():
         depends_on: Optional[list[str]] = None,
         affects: Optional[list[str]] = None,
         priority: Optional[str] = None,
+        type: Optional[str] = None,
         tags: Optional[list[str]] = None,
     ) -> str:
         """Update task fields. List fields REPLACE when provided (pass [] to clear).
@@ -183,6 +186,7 @@ def build_server():
             depends_on: new depends-on refs (replaces; [] clears).
             affects: new affects refs (replaces; [] clears).
             priority: new priority P0..P3.
+            type: new type: task|feature|bugfix|improvement|chore.
             tags: new tag list (replaces; [] clears).
         """
         try:
@@ -206,6 +210,8 @@ def build_server():
                     changes["affects"] = affects
                 if priority is not None:
                     changes["priority"] = priority
+                if type is not None:
+                    changes["type"] = type
                 if tags is not None:
                     changes["tags"] = tags
                 updated = store.update(task, **changes) if changes else task

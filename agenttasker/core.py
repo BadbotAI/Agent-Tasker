@@ -32,6 +32,10 @@ PRIORITIES: tuple[int, ...] = (0, 1, 2, 3)
 DEFAULT_PRIORITY = 2
 PRIORITY_LABELS = ("P0", "P1", "P2", "P3")
 
+# Task types.
+TASK_TYPES: tuple[str, ...] = ("task", "feature", "bugfix", "improvement", "chore")
+DEFAULT_TYPE = "task"
+
 EXPORT_FORMAT = "agenttasker-export"
 EXPORT_VERSION = 1
 
@@ -67,6 +71,17 @@ def status_label(status: str) -> str:
 
 def priority_label(priority: int) -> str:
     return PRIORITY_LABELS[priority] if 0 <= priority < len(PRIORITY_LABELS) else str(priority)
+
+
+def normalize_type(value) -> str:
+    """Accept task/feature/bugfix|bug|fix/improvement|refactor/chore -> canonical type."""
+    text = str(value).strip().lower().replace(" ", "_").replace("-", "_")
+    aliases = {"bug": "bugfix", "fix": "bugfix", "feat": "feature",
+               "refactor": "improvement", "cleanup": "chore", "maintenance": "chore"}
+    text = aliases.get(text, text)
+    if text not in TASK_TYPES:
+        raise TaskError(f"unknown type {value!r}; expected one of: {', '.join(TASK_TYPES)}")
+    return text
 
 
 def normalize_priority(value) -> int:
@@ -202,7 +217,6 @@ def is_blocked(task: "Task", dep_statuses: Mapping[int, str]) -> bool:
         return False
     return bool(task.blockers) or bool(unfinished_dep_ids(task, dep_statuses))
 
-
 def is_ready(task: "Task", dep_statuses: Mapping[int, str]) -> bool:
     if task.status not in STARTABLE_STATUSES:
         return False
@@ -235,6 +249,7 @@ class Task:
     owner: str = ""                                      # claim holder ('' = unclaimed)
     claimed_at: str = ""
     priority: int = DEFAULT_PRIORITY
+    type: str = DEFAULT_TYPE
     tags: list[str] = field(default_factory=list)        # workstream / labels
     created_at: str = ""
     updated_at: str = ""
@@ -254,6 +269,7 @@ class Task:
             owner=row["owner"],
             claimed_at=row["claimed_at"],
             priority=row["priority"] if isinstance(row["priority"], int) else DEFAULT_PRIORITY,
+            type=row["type"],
             tags=_decode_list(row["tags"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
@@ -267,6 +283,7 @@ class Task:
             "name": self.name,
             "status": self.status,
             "priority": self.priority,
+            "type": self.type,
             "tags": list(self.tags),
             "owner": self.owner,
             "claimed_at": self.claimed_at,
@@ -283,7 +300,7 @@ class Task:
 # --- store -------------------------------------------------------------------
 _UPDATABLE = (
     "name", "status", "description", "evidence", "blockers",
-    "depends_on", "affects", "priority", "tags",
+    "depends_on", "affects", "priority", "type", "tags",
 )
 
 
@@ -318,6 +335,7 @@ class Store:
         depends_on: Sequence[str | int] = (),
         affects: Sequence[str | int] = (),
         priority=DEFAULT_PRIORITY,
+        type=DEFAULT_TYPE,
         tags: Sequence[str] = (),
     ) -> Task:
         name = name.strip()
@@ -325,18 +343,19 @@ class Store:
             raise TaskError("task name must not be empty")
         status = normalize_status(status)
         priority = normalize_priority(priority)
+        type_ = normalize_type(type)
         deps = self._validate_refs(project, depends_on)
         links = self._validate_refs(project, affects)
         now = utcnow()
         cur = self.db.execute(
             "INSERT INTO tasks (project, name, status, description, evidence, blockers,"
-            " depends_on, affects, owner, claimed_at, priority, tags,"
-            " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " depends_on, affects, owner, claimed_at, priority, type, tags,"
+            " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 project, name, status, description, evidence,
                 json.dumps([str(b).strip() for b in blockers if str(b).strip()]),
                 json.dumps(deps), json.dumps(links),
-                "", "", priority, json.dumps(parse_tags(tags)), now, now,
+                "", "", priority, type_, json.dumps(parse_tags(tags)), now, now,
             ),
         )
         self.db.commit()
@@ -418,6 +437,8 @@ class Store:
             values["status"] = normalize_status(values["status"])
         if "priority" in values:
             values["priority"] = normalize_priority(values["priority"])
+        if "type" in values:
+            values["type"] = normalize_type(values["type"])
         for key in ("depends_on", "affects"):
             if key in values:
                 values[key] = self._validate_refs(task.project, values[key], exclude_self=task.id)
@@ -786,6 +807,7 @@ class Store:
                     evidence=item.get("evidence", ""),
                     blockers=item.get("blockers", []),
                     priority=item.get("priority", DEFAULT_PRIORITY),
+                    type=item.get("type", DEFAULT_TYPE),
                     tags=item.get("tags", []),
                 )
                 if item.get("owner"):

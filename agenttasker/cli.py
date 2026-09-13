@@ -24,7 +24,8 @@ from .core import (
     resolve_project,
     status_label,
     unfinished_dep_ids,
-    utcnow,
+    prev_status,
+    priority_label,
 )
 
 _STATUS_HELP = ", ".join(STATUSES)
@@ -107,6 +108,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="priority level P0 (highest) .. P3 (default: P2)",
     )
     p.add_argument(
+        "--type", default="task", metavar="TYPE",
+        help="task type: task|feature|bugfix|improvement|chore (default: task)",
+    )
+    p.add_argument(
         "--tag", action="append", metavar="TAG",
         help="workstream/tag label; repeatable, comma-separated ok",
     )
@@ -131,6 +136,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true", help="machine-readable output")
     p.set_defaults(func=cmd_ls)
 
+    p = sub.add_parser("list", parents=[common], help="flat table of all tasks, priority order")
+    p.add_argument("-a", "--all-projects", action="store_true", help="list across all projects")
+    p.add_argument("--json", action="store_true", help="machine-readable output")
+    p.set_defaults(func=cmd_list)
     p = sub.add_parser("show", parents=[common], help="show full task detail")
     p.add_argument("ref", help="task id or PROJECT-id (e.g. '12' or 'demo-12')")
     p.add_argument("--json", action="store_true", help="machine-readable output")
@@ -149,6 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--affects", action="append", metavar="REF",
                    help="affects refs (replaces list; repeatable; '' clears)")
     p.add_argument("--priority", metavar="P0-P3", help="new priority (P0 highest .. P3)")
+    p.add_argument("--type", metavar="TYPE", help="new type: task|feature|bugfix|improvement|chore")
     p.add_argument("--tag", action="append", metavar="TAG",
                    help="tags/workstreams (replaces list; repeatable; '' clears)")
     p.set_defaults(func=cmd_update)
@@ -260,6 +270,7 @@ def cmd_add(args, store: Store) -> int:
         depends_on=_comma_list(args.dep),
         affects=_comma_list(args.affects),
         priority=args.priority,
+        type=args.type,
         tags=parse_tags(args.tag or []),
     )
     print(f"Added {display_ref(project, task.id)} [{task.status}] {task.name}")
@@ -323,6 +334,37 @@ def cmd_show(args, store: Store) -> int:
     return 0
 
 
+def cmd_list(args, store: Store) -> int:
+    """Flat table of every task, priority-first: id, title, status, priority, type, blocked-by, created."""
+    project = None if args.all_projects else resolve_project(args.project)
+    tasks = sorted(store.list_tasks(project), key=lambda t: (t.priority, t.id))
+
+    if args.json:
+        print(jsonlib.dumps([_task_json(store, t) for t in tasks], indent=2))
+        return 0
+
+    def blocked_by(t: Task) -> str:
+        dep_map = store.dep_statuses(t)
+        pending = unfinished_dep_ids(t, dep_map)
+        bits = [f"#{i}" for i in pending]
+        if t.blockers:
+            bits.append(f"ext:{len(t.blockers)}")
+        return ",".join(bits) if bits else "—"
+
+    scope = "all projects" if project is None else f"project {project!r}"
+    print(f"{scope} — {len(tasks)} task(s), priority order")
+    print(f"{'ID':<10} {'TITLE':<38} {'STATUS':<11} {'PRI':<3} {'TYPE':<11} {'BLOCKED-BY':<16} CREATED")
+    for t in tasks:
+        ident = f"{t.project}/{t.id}" if project is None else f"{t.id}"
+        print(
+            f"{ident:<10} {t.name[:36]:<38} {t.status:<11} "
+            f"{priority_label(t.priority):<3} {t.type:<11} {blocked_by(t):<16} "
+            f"{t.created_at[:10]}"
+        )
+    return 0
+
+
+
 def cmd_update(args, store: Store) -> int:
     project = resolve_project(args.project)
     task = store.get(project, args.ref)
@@ -344,6 +386,8 @@ def cmd_update(args, store: Store) -> int:
         task = store.append_evidence(task, args.append_evidence)  # atomic SQL append
     if args.priority is not None:
         changes["priority"] = args.priority
+    if args.type is not None:
+        changes["type"] = args.type
     if args.tag is not None:
         changes["tags"] = _comma_list(args.tag)
 
@@ -504,9 +548,21 @@ def cmd_detach(args, store: Store) -> int:
 
 
 def cmd_board(args, store: Store) -> int:
-    from .tui import run_board
+    from .tui import run_board, select_project
 
+    explicit = args.project is not None or os.environ.get("AGENTTASKER_PROJECT")
     project = resolve_project(args.project)
+    if not explicit:
+        # no project given: let the user pick from existing projects first
+        projects = list(store.projects())
+        if not projects:
+            print("no projects yet — create tasks with `agenttasker add \"...\"` first")
+            return 0
+        if project not in projects:
+            chosen = select_project(store, projects, preferred=project)
+            if chosen is None:
+                return 0
+            project = chosen
     run_board(store, project)
     return 0
 

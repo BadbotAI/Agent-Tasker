@@ -23,11 +23,13 @@ Board order:
 
 Tasks carry a **name**, **description**, **evidence** (analysis gathered pre-task),
 free-form external **blockers**, **depends_on** (hard task deps), **affects**
-(informational links), **priority** (`P0`…`P3`, default `P2`), **tags** (workstream
-labels), an atomic **owner** claim, and **attachments** (any binary file,
+(informational links), **priority** (`P0`…`P3`, default `P2`), **type**
+(`task`/`feature`/`bugfix`/`improvement`/`chore`), **tags** (workstream labels),
+an atomic **owner** claim, and **attachments** (any binary file,
 sha256-addressed on disk). Listings sort by status, then priority. A task is *ready*
 when it sits in `backlog`/`todo`, has no blockers, and all dependencies are `done`.
-A task is *blocked* while any dependency is unfinished or any external blocker is open.
+
+## Install
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[mcp]'   # [mcp] only needed for the MCP server
@@ -57,7 +59,8 @@ agenttasker claim 1 --owner agent-7 # atomically take it (refuses if held)
 agenttasker ls --blocked            # stuck work (unfinished deps or external blockers)
 agenttasker update 1 --append-evidence "repro confirmed"
 agenttasker done 1
-agenttasker board                   # TUI for humans
+agenttasker board                   # TUI for humans (picks a project if none given)
+agenttasker list                    # flat table: id title status pri type blocked-by created
 ```
 
 Tasks are namespaced per **project**: the git repo name (or cwd name outside a repo),

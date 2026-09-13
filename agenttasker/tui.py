@@ -19,9 +19,11 @@ import textwrap
 
 from .core import (
     DEFAULT_PRIORITY,
+    DEFAULT_TYPE,
     DONE,
     STARTABLE_STATUSES,
     STATUSES,
+    TASK_TYPES,
     Store,
     Task,
     TaskError,
@@ -275,6 +277,8 @@ class Board:
         parts: list[str] = []
         if task.priority != DEFAULT_PRIORITY:
             parts.append(priority_label(task.priority))
+        if task.type != DEFAULT_TYPE:
+            parts.append(task.type)
         if task.owner:
             parts.append("@" + task.owner)
         if task.depends_on:
@@ -410,7 +414,7 @@ class Board:
             stdscr.timeout(WATCH_MS)
 
     def _view_loop(self, stdscr, task: Task) -> None:
-        sel, offset, message = 0, 0, ""
+        sel, offset, message, follow = 0, 0, "", True
         while True:
             blocks = self._field_blocks(task)
             sel = max(0, min(sel, len(blocks) - 1))
@@ -421,17 +425,23 @@ class Board:
                 marker = "▸ " if bi == sel else "  "
                 disp.append((f"{marker}{b['label']}", attr, bi))
                 for text, a in b["lines"]:
-                    disp.append(("SEP" if text == "─" else f"  {text}", a, bi))
+                    if text == "─":
+                        disp.append(("SEP", a, bi))
+                        continue
+                    # word-wrap long content (evidence/description) to the popup width
+                    for part in textwrap.wrap(text, width=max(10, width - 12)) or [""]:
+                        disp.append((f"  {part}", a, bi))
                 disp.append(("", 0, bi))
 
             title = f"{task.project}-{task.id}"
             h, w, y, x = self._popup_geometry([d[0] for d in disp], title, height, width)
             max_lines = max(1, h - 3)
-            sel_line = next(i for i, d in enumerate(disp) if d[2] == sel)
-            if sel_line < offset:
-                offset = sel_line
-            elif sel_line >= offset + max_lines:
-                offset = sel_line - max_lines + 1
+            if follow:  # keep the selected field visible when selection moves
+                sel_line = next(i for i, d in enumerate(disp) if d[2] == sel)
+                if sel_line < offset:
+                    offset = sel_line
+                elif sel_line >= offset + max_lines:
+                    offset = sel_line - max_lines + 1
             offset = max(0, min(offset, max(0, len(disp) - max_lines)))
 
             win = self._draw_box(h, w, y, x, title)
@@ -443,17 +453,25 @@ class Board:
                 if text == "SEP":
                     text, attr = "─" * (w - 6), attr | curses.A_DIM
                 _safe(win, 1 + i, 2, text[: w - 3], attr)
-            hint = f" ↑↓ field · e: edit · q: close{' · ' + message if message else ''}"
+            more = " ↓" if offset + max_lines < len(disp) else ""
+            hint = f" ↑↓ field · PgUp/PgDn scroll{more} · e: edit · q: close{' · ' + message if message else ''}"
             _safe(win, h - 1, 2, hint[: w - 3], curses.A_DIM)
             win.noutrefresh()
             curses.doupdate()
 
             ch = stdscr.getch()
             message = ""
+            follow = True
             if ch in (curses.KEY_UP, ord("k")):
                 sel = max(0, sel - 1)
             elif ch in (curses.KEY_DOWN, ord("j")):
                 sel = min(len(blocks) - 1, sel + 1)
+            elif ch == curses.KEY_NPAGE:  # scroll without moving the selection
+                offset = min(max(0, len(disp) - max_lines), offset + max_lines)
+                follow = False
+            elif ch == curses.KEY_PPAGE:
+                offset = max(0, offset - max_lines)
+                follow = False
             elif ch in (ord("e"), ord("E"), curses.KEY_ENTER, 10, 13):
                 block = blocks[sel]
                 if block["key"]:
@@ -515,7 +533,7 @@ class Board:
             block("name", "TITLE", [(task.name, 0)]),
             block("status", "STATUS", [(status_label(task.status), status_attr)]),
             block("priority", "PRIORITY", [(priority_label(task.priority), bold)]),
-            block("tags", "TAGS", [(", ".join(task.tags) if task.tags else "(none)", 0)]),
+            block("type", "TYPE", [(task.type, bold)]),
             block(None, "PROJECT", [(task.project, dim)]),
             block(None, "OWNER", [(owner_text, alert if task.owner else dim)]),
             block("description", "DESCRIPTION",
@@ -564,6 +582,11 @@ class Board:
             if idx is None:
                 return None
             return self.store.update(task, priority=idx)
+        if key == "type":
+            idx = self._menu(stdscr, "Type", list(TASK_TYPES), TASK_TYPES.index(task.type))
+            if idx is None:
+                return None
+            return self.store.update(task, type=TASK_TYPES[idx])
         if key == "tags":
             value = self._input_box(stdscr, "Tags (comma-separated)", ", ".join(task.tags))
             if value is None:
@@ -721,6 +744,38 @@ class Board:
         idx = self._menu(stdscr, f"Move #{task.id}", options, STATUSES.index(task.status))
         if idx is not None:
             self.apply_move(task, STATUSES[idx])
+
+
+def select_project(store: Store, projects: list[str], preferred: str | None = None) -> str | None:
+    """Full-screen project picker; returns the chosen name or None if cancelled."""
+
+    def _run(stdscr) -> str | None:
+        curses.curs_set(0)
+        stdscr.keypad(True)
+        counts = store.projects()
+        sel = projects.index(preferred) if preferred in projects else 0
+        while True:
+            stdscr.erase()
+            height, width = stdscr.getmaxyx()
+            _safe(stdscr, 0, 0, " Select a project", curses.A_BOLD)
+            _safe(stdscr, 1, 0, " ↑↓ select · Enter open · q quit", curses.A_DIM)
+            for i, name in enumerate(projects[: max(0, height - 5)]):
+                total = counts.get(name, {}).get("total", 0)
+                attr = curses.A_REVERSE if i == sel else 0
+                _safe(stdscr, 3 + i, 2, f" {name} ({total} tasks) "[: width - 3], attr)
+            stdscr.noutrefresh()
+            curses.doupdate()
+            ch = stdscr.getch()
+            if ch in (curses.KEY_UP, ord("k")):
+                sel = max(0, sel - 1)
+            elif ch in (curses.KEY_DOWN, ord("j")):
+                sel = min(len(projects) - 1, sel + 1)
+            elif ch in (curses.KEY_ENTER, 10, 13):
+                return projects[sel]
+            elif ch in (ord("q"), ord("Q"), 27):
+                return None
+
+    return curses.wrapper(_run)
 
 
 def run_board(store: Store, project: str) -> int:

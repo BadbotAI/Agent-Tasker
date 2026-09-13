@@ -5,6 +5,7 @@ from __future__ import annotations
 from .core import (
     DONE,
     DEFAULT_PRIORITY,
+    DEFAULT_TYPE,
     Task,
     claim_age_hours,
     display_ref,
@@ -43,11 +44,13 @@ def _owner_flag(task: Task) -> str:
 
 
 def task_line(task: Task, by_id: dict[int, Task], show_project: bool = False) -> str:
-    """One-line board summary: '#12 in_progress Fix login [P1 @agent 2h] [blocked ...]'."""
+    """One-line board summary: '#12 in_progress Fix login [P1 bugfix @agent 2h]'."""
     prefix = f"{task.project}/" if show_project else ""
     flags: list[str] = []
     if task.priority != DEFAULT_PRIORITY:
         flags.append(priority_label(task.priority))
+    if task.type != DEFAULT_TYPE:
+        flags.append(task.type)
     owner = _owner_flag(task)
     if owner:
         flags.append(owner)
@@ -70,6 +73,7 @@ def detail(task: Task, by_id: dict[int, Task]) -> str:
         f"{display_ref(task.project, task.id)}  {task.name}",
         f"Status:   {status_label(task.status)}",
         f"Priority: {priority_label(task.priority)}",
+        f"Type:     {task.type}",
         f"Tags:     {', '.join(task.tags) if task.tags else '(none)'}",
     ]
     owner = _owner_flag(task)

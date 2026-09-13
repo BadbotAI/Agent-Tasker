@@ -16,6 +16,7 @@ from agenttasker.core import (
     TaskError,
     claim_age_hours,
     normalize_priority,
+    normalize_type,
 )
 
 
@@ -224,6 +225,42 @@ class AttachmentTest(unittest.TestCase):
                 atts = dest.list_attachments(imported)
                 self.assertEqual(len(atts), 1)
                 self.assertEqual(dest.read_attachment_bytes(imported, atts[0]["id"]), payload_bytes)
+
+
+class TaskTypeTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Store(Path(self.tmp.name) / "tasks.db")
+        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(self.store.close)
+
+    def test_normalize_type_aliases_and_errors(self):
+        self.assertEqual(normalize_type("BUG"), "bugfix")
+        self.assertEqual(normalize_type("fix"), "bugfix")
+        self.assertEqual(normalize_type("feat"), "feature")
+        self.assertEqual(normalize_type("refactor"), "improvement")
+        self.assertEqual(normalize_type("Task"), "task")
+        with self.assertRaises(TaskError):
+            normalize_type("epic")
+
+    def test_type_roundtrip_and_update(self):
+        t1 = self.store.add_task("demo", "crash on boot", type="bugfix", priority=0)
+        t2 = self.store.add_task("demo", "new dashboard", type="feature")
+        t3 = self.store.add_task("demo", "plain")
+        self.assertEqual((t1.type, t2.type, t3.type), ("bugfix", "feature", "task"))
+        updated = self.store.update(t3, type="chore")
+        self.assertEqual(updated.type, "chore")
+        # default sort stays status/priority/id; types ride along
+        self.assertEqual([t.name for t in self.store.list_tasks("demo")],
+                         ["crash on boot", "new dashboard", "plain"])
+
+    def test_type_survives_export_import(self):
+        self.store.add_task("proj", "typed", type="bugfix", priority=1)
+        payload = self.store.export_tasks("proj")
+        with tempfile.TemporaryDirectory() as other:
+            with Store(Path(other) / "tasks.db") as dest:
+                dest.import_tasks(payload)
+                self.assertEqual(dest.list_tasks("proj")[0].type, "bugfix")
 
 
 if __name__ == "__main__":

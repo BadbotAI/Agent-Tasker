@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     owner       TEXT NOT NULL DEFAULT '',     -- current claim holder ('' = unclaimed)
     claimed_at  TEXT NOT NULL DEFAULT '',     -- when the current claim was taken
     priority    INTEGER NOT NULL DEFAULT 2,   -- 0=P0 (highest) .. 3=P3
+    type        TEXT NOT NULL DEFAULT 'task', -- task|feature|bugfix|improvement|chore
     tags        TEXT NOT NULL DEFAULT '[]',   -- JSON array of strings (workstream/labels)
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
@@ -44,6 +45,7 @@ _MIGRATIONS = (
     ("tasks", "claimed_at", "TEXT NOT NULL DEFAULT ''"),
     ("tasks", "priority", "INTEGER NOT NULL DEFAULT 2"),
     ("tasks", "tags", "TEXT NOT NULL DEFAULT '[]'"),
+    ("tasks", "type", "TEXT NOT NULL DEFAULT 'task'"),
 )
 
 
