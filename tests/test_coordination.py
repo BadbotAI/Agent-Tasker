@@ -261,6 +261,32 @@ class TaskTypeTest(unittest.TestCase):
             with Store(Path(other) / "tasks.db") as dest:
                 dest.import_tasks(payload)
                 self.assertEqual(dest.list_tasks("proj")[0].type, "bugfix")
+class ListOrderTest(unittest.TestCase):
+    """The list view orders by status (todo, backlog, deferred, in-flight, done), then priority."""
+
+    def test_list_view_order(self):
+        from agenttasker.tui import Board
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with Store(Path(tmp) / "tasks.db") as store:
+                store.add_task("d", "done old", status="done")
+                store.add_task("d", "review", status="in_review")
+                store.add_task("d", "inprog", status="in_progress")
+                store.add_task("d", "deferred", status="deferred")
+                store.add_task("d", "backlog low", status="backlog", priority=3)
+                store.add_task("d", "backlog high", status="backlog", priority=0)
+                store.add_task("d", "todo p2", status="todo")
+                store.add_task("d", "todo p0", status="todo", priority=0)
+                board = Board(store, "d")
+                board.reload()
+                names = [t.name for t in board.list_tasks_sorted()]
+                self.assertEqual(
+                    names,
+                    ["todo p0", "todo p2", "backlog high", "backlog low",
+                     "deferred", "inprog", "review", "done old"],
+                )
+
+
 
 
 if __name__ == "__main__":

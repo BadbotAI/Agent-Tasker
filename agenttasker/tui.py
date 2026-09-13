@@ -23,7 +23,7 @@ from .core import (
     DONE,
     STARTABLE_STATUSES,
     STATUSES,
-    TASK_TYPES,
+    LIST_STATUS_ORDER,
     Store,
     Task,
     TaskError,
@@ -190,7 +190,7 @@ class Board:
         """Flat priority-ordered table of every task in the project."""
         stdscr.erase()
         height, width = stdscr.getmaxyx()
-        _safe(stdscr, 0, 0, f" {self.project} — list view · priority order", curses.A_BOLD)
+        _safe(stdscr, 0, 0, f" {self.project} — list view · todo first, done last", curses.A_BOLD)
         _safe(stdscr, 1, 0,
               " ↑↓ select · Enter: details · v: board · q: quit  · auto-reload on db change",
               curses.A_DIM)
@@ -236,7 +236,8 @@ class Board:
         curses.doupdate()
 
     def list_tasks_sorted(self) -> list[Task]:
-        return sorted(self.tasks, key=lambda t: (t.priority, t.id))
+        order = {s: i for i, s in enumerate(LIST_STATUS_ORDER)}
+        return sorted(self.tasks, key=lambda t: (order[t.status], t.priority, t.id))
 
     def draw_board(self, stdscr) -> None:
         stdscr.erase()

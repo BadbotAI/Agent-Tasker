@@ -16,7 +16,7 @@ from .core import (
     TaskError,
     display_ref,
     is_blocked,
-    is_ready,
+    LIST_STATUS_ORDER,
     next_status,
     normalize_status,
     parse_tags,
@@ -136,7 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true", help="machine-readable output")
     p.set_defaults(func=cmd_ls)
 
-    p = sub.add_parser("list", parents=[common], help="flat table of all tasks, priority order")
+    p = sub.add_parser("list", parents=[common], help="flat task table: todo first, done last, priority within status")
     p.add_argument("-a", "--all-projects", action="store_true", help="list across all projects")
     p.add_argument("--json", action="store_true", help="machine-readable output")
     p.set_defaults(func=cmd_list)
@@ -335,10 +335,11 @@ def cmd_show(args, store: Store) -> int:
 
 
 def cmd_list(args, store: Store) -> int:
-    """Flat table of every task, priority-first: id, title, status, priority, type, blocked-by, created."""
+    """Flat table of every task: todo, backlog, deferred, in-flight, done last;
+    priority within each status. Columns: id, title, status, priority, type, blocked-by, created."""
     project = None if args.all_projects else resolve_project(args.project)
-    tasks = sorted(store.list_tasks(project), key=lambda t: (t.priority, t.id))
-
+    status_order = {s: i for i, s in enumerate(LIST_STATUS_ORDER)}
+    tasks = sorted(store.list_tasks(project), key=lambda t: (status_order[t.status], t.priority, t.id))
     if args.json:
         print(jsonlib.dumps([_task_json(store, t) for t in tasks], indent=2))
         return 0
@@ -352,7 +353,7 @@ def cmd_list(args, store: Store) -> int:
         return ",".join(bits) if bits else "—"
 
     scope = "all projects" if project is None else f"project {project!r}"
-    print(f"{scope} — {len(tasks)} task(s), priority order")
+    print(f"{scope} — {len(tasks)} task(s) · todo first, done last, priority within status")
     print(f"{'ID':<10} {'TITLE':<38} {'STATUS':<11} {'PRI':<3} {'TYPE':<11} {'BLOCKED-BY':<16} CREATED")
     for t in tasks:
         ident = f"{t.project}/{t.id}" if project is None else f"{t.id}"

@@ -26,6 +26,8 @@ STATUSES: tuple[str, ...] = (
 )
 DEFERRED, BACKLOG, TODO, IN_PROGRESS, IN_REVIEW, DONE = STATUSES
 STARTABLE_STATUSES = (BACKLOG, TODO)
+# list-view order: actionable first, in-flight next, done at the bottom
+LIST_STATUS_ORDER: tuple[str, ...] = (TODO, BACKLOG, DEFERRED, IN_PROGRESS, IN_REVIEW, DONE)
 
 # Priority levels: 0 is highest.
 PRIORITIES: tuple[int, ...] = (0, 1, 2, 3)
