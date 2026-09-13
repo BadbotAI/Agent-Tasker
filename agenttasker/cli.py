@@ -140,10 +140,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-a", "--all-projects", action="store_true", help="list across all projects")
     p.add_argument("--json", action="store_true", help="machine-readable output")
     p.set_defaults(func=cmd_list)
+
     p = sub.add_parser("show", parents=[common], help="show full task detail")
     p.add_argument("ref", help="task id or PROJECT-id (e.g. '12' or 'demo-12')")
     p.add_argument("--json", action="store_true", help="machine-readable output")
     p.set_defaults(func=cmd_show)
+
+    p = sub.add_parser("serve", parents=[common], help="launch the local web UI (board + list views)")
+    p.add_argument("--host", default="127.0.0.1", help="bind address (default: 127.0.0.1)")
+    p.add_argument("--port", type=int, default=8988, help="port (default: 8988)")
+    p.add_argument("--no-browser", action="store_true", help="don't open a browser automatically")
+    p.set_defaults(func=cmd_serve)
 
     p = sub.add_parser("update", parents=[common], help="edit task fields")
     p.add_argument("ref", help="task id or PROJECT-id")
@@ -566,6 +573,14 @@ def cmd_board(args, store: Store) -> int:
                 return 0
             project = chosen
     run_board(store, project)
+    return 0
+
+
+def cmd_serve(args, store: Store) -> int:
+    from .web import serve
+
+    project = resolve_project(args.project)
+    serve(project, host=args.host, port=args.port, db=args.db, open_browser=not args.no_browser)
     return 0
 
 

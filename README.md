@@ -91,9 +91,17 @@ agenttasker export [PATH] [-a]                 # portable JSON; attachments base
 agenttasker import PATH [--mode merge|replace] [--dry-run]
 ```
 
-Exports are versioned; the importer remaps ids (name-matched tasks are kept and
-dependency links re-resolved), previews decisions with `--dry-run`, and verifies
-attachment sha256 checksums on the way back in.
+## Web UI
+
+```bash
+agenttasker serve            # http://127.0.0.1:8988 (opens your browser)
+agenttasker serve -p PROJ --port 9000 --no-browser
+```
+
+Same features as the TUI plus adding/deleting tasks: board and list views,
+full field editing, status moves, claim/release, evidence appends, and
+attachments — click one to open it in a new tab, or upload new files.
+Polls for changes every 2s. Stdlib only; binds 127.0.0.1 by default.
 
 ## TUI keys
 

@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agenttasker</title>
+<style>
+:root {
+  --bg: #0f1115; --panel: #161a21; --panel2: #1c212b; --line: #2a303c;
+  --fg: #e8eaf0; --dim: #8a93a5; --accent: #4f8cff;
+  --deferred: #8a8a97; --backlog: #22d3ee; --todo: #e5e7eb;
+  --in_progress: #fbbf24; --in_review: #d946ef; --done: #34d399;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg);
+       font: 14px/1.45 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+a { color: var(--accent); }
+button { font: inherit; background: var(--panel2); color: var(--fg);
+         border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px;
+         cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.danger { border-color: #b91c1c; color: #f87171; }
+input, select, textarea { font: inherit; background: var(--panel2); color: var(--fg);
+       border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; width: 100%; }
+textarea { resize: vertical; min-height: 70px; }
+.topbar { display: flex; gap: 10px; align-items: center; padding: 10px 14px;
+          border-bottom: 1px solid var(--line); position: sticky; top: 0;
+          background: var(--bg); z-index: 5; flex-wrap: wrap; }
+.topbar h1 { font-size: 15px; margin: 0 6px 0 0; color: var(--dim); font-weight: 600; }
+.topbar .spacer { flex: 1; }
+.seg { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; background: transparent; }
+.seg button.on { background: var(--accent); color: #fff; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--done); }
+.dot.off { background: var(--dim); }
+
+/* board */
+.board { display: flex; gap: 10px; padding: 12px; align-items: flex-start;
+         overflow-x: auto; min-height: calc(100vh - 54px); }
+.col { flex: 1 1 0; min-width: 230px; background: var(--panel);
+       border: 1px solid var(--line); border-radius: 8px; }
+.col > h2 { margin: 0; padding: 8px 10px; font-size: 12px; letter-spacing: .06em;
+            text-transform: uppercase; border-bottom: 2px solid var(--line); }
+.col > h2 .n { color: var(--dim); }
+.card { margin: 8px; padding: 8px 10px; background: var(--panel2); border-radius: 6px;
+        border-left: 3px solid var(--sc, var(--dim)); cursor: pointer; }
+.card:hover { outline: 1px solid var(--accent); }
+.card .t { font-weight: 600; word-break: break-word; }
+.card .m { color: var(--dim); font-size: 12px; margin-top: 3px; }
+.card .m .blocked { color: #f87171; }
+.card .m .ready { color: var(--done); }
+.card .d { color: var(--dim); font-size: 12px; margin-top: 4px;
+           display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+           overflow: hidden; }
+
+/* list */
+.listwrap { padding: 12px; overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; }
+th { text-align: left; color: var(--dim); font-size: 12px; text-transform: uppercase;
+     letter-spacing: .05em; border-bottom: 1px solid var(--line); padding: 6px 8px; }
+td { padding: 6px 8px; border-bottom: 1px solid var(--line); }
+tr.row { cursor: pointer; }
+tr.row:hover { background: var(--panel); }
+tr.done td { color: var(--dim); }
+.pri0 { color: #f87171; font-weight: 700; } .pri1 { color: #fbbf24; }
+.pri3 { color: var(--dim); }
+
+/* modal */
+.overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex;
+           align-items: flex-start; justify-content: center; padding: 40px 16px;
+           overflow-y: auto; z-index: 10; }
+.modal { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+         width: 720px; max-width: 100%; padding: 0; }
+.modal .head { display: flex; gap: 8px; align-items: center; padding: 12px 16px;
+               border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.modal .head .ref { color: var(--dim); }
+.modal .head .spacer { flex: 1; }
+.modal .body { padding: 12px 16px; display: grid; gap: 12px; }
+.modal .foot { display: flex; gap: 8px; padding: 12px 16px;
+               border-top: 1px solid var(--line); flex-wrap: wrap; }
+.modal .foot .spacer { flex: 1; }
+.frow { display: grid; grid-template-columns: 130px 1fr; gap: 10px; align-items: start; }
+.frow label { color: var(--dim); padding-top: 6px; font-size: 12px;
+              text-transform: uppercase; letter-spacing: .05em; }
+.frow .hint { color: var(--dim); font-size: 11px; margin-top: 2px; }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.att { display: flex; gap: 10px; align-items: center; padding: 4px 0; }
+.att .sz { color: var(--dim); font-size: 12px; }
+.att form { display: inline; }
+.note { color: var(--dim); font-size: 12px; }
+.err { color: #f87171; }
+/* project picker */
+.pick { display: flex; flex-direction: column; gap: 8px; max-width: 420px;
+        margin: 10vh auto; padding: 20px; background: var(--panel);
+        border: 1px solid var(--line); border-radius: 10px; }
+.pick h1 { font-size: 16px; margin: 0 0 6px; }
+.pick button { text-align: left; padding: 10px; }
+</style>
+</head>
+<body>
+<div class="topbar" id="topbar" style="display:none">
+  <h1>agenttasker</h1>
+  <select id="proj" style="width:auto"></select>
+  <div class="seg">
+    <button id="vBoard">Board</button>
+    <button id="vList">List</button>
+  </div>
+  <button class="primary" id="newTask">+ New task</button>
+  <div class="spacer"></div>
+  <span class="note" id="msg"></span>
+  <div class="dot" id="live" title="auto-refresh"></div>
+</div>
+<div id="main"></div>
+
+<script>
+"use strict";
+let CFG = null, TASKS = [], PROJECT = null, VIEW = localStorage.atx_view || "board";
+let modalOpen = false, lastHash = "";
+
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
+  (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const SC = (st) => `var(--${st})`;
+
+async function api(path, opts = {}) {
+  if (opts.body) { opts.headers = {"Content-Type": "application/json"}; opts.body = JSON.stringify(opts.body); }
+  const r = await fetch(path, opts);
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || r.status);
+  return d;
+}
+function note(text, isErr) {
+  const el = $("#msg"); el.textContent = text || "";
+  el.className = isErr ? "err" : "note";
+  if (text) setTimeout(() => { if (el.textContent === text) el.textContent = ""; }, 4000);
+}
+
+const statusLabel = (s) => ({deferred:"Deferred", backlog:"Backlog", todo:"To Do",
+  in_progress:"In Progress", in_review:"In Review", done:"Done"}[s] || s);
+const priLabel = (p) => "P" + p;
+function human(n) { for (const u of ["B","KB","MB","GB"]) { if (n < 1024 || u === "GB")
+  return u === "B" ? `${n} ${u}` : `${n.toFixed(1)} ${u}`; n /= 1024; } }
+
+function metaLine(t) {
+  const bits = [];
+  if (t.priority !== CFG.default_priority) bits.push(`<b class="pri${t.priority}">${priLabel(t.priority)}</b>`);
+  if (t.type !== CFG.default_type) bits.push(esc(t.type));
+  if (t.owner) bits.push(`@${esc(t.owner)}`);
+  if (t.depends_on?.length) bits.push(`deps:${t.depends_on.slice(0,3).map(i => "#"+i).join(",")}${t.depends_on.length>3?"…":""}`);
+  if (t.blockers?.length) bits.push(`ext:${t.blockers.length}`);
+  if (t.blocked) bits.push(`<span class="blocked">blocked</span>`);
+  else if (t.ready) bits.push(`<span class="ready">ready</span>`);
+  return bits.join(" · ");
+}
+function blockedBy(t) {
+  const bits = t.blocked_by.slice(0,2).map(i => "#"+i);
+  if (t.blockers?.length) bits.push(`ext:${t.blockers.length}`);
+  return bits.join(",") || "—";
+}
+
+/* ---------- views ---------- */
+function render() {
+  const main = $("#main");
+  document.documentElement.style.setProperty("--proj", PROJECT);
+  if (VIEW === "list") renderList(main); else renderBoard(main);
+  $("#vBoard").classList.toggle("on", VIEW === "board");
+  $("#vList").classList.toggle("on", VIEW === "list");
+}
+function renderBoard(main) {
+  main.innerHTML = `<div class="board">` + CFG.statuses.map(st => {
+    const ts = TASKS.filter(t => t.status === st);
+    return `<div class="col"><h2>${statusLabel(st)} <span class="n">(${ts.length})</span></h2>` +
+      ts.map(t => card(t)).join("") + `</div>`;
+  }).join("") + `</div>`;
+}
+function card(t) {
+  const body = (t.description || t.evidence || "").trim();
+  return `<div class="card" style="--sc:${SC(t.status)}" data-id="${t.id}">
+    <div class="t">#${t.id} ${esc(t.name)}</div>
+    <div class="m">${metaLine(t)}</div>
+    ${body ? `<div class="d">${esc(body)}</div>` : ""}</div>`;
+}
+function renderList(main) {
+  const order = {}; CFG.list_order.forEach((s, i) => order[s] = i);
+  const rows = [...TASKS].sort((a, b) => order[a.status] - order[b.status] || a.priority - b.priority || a.id - b.id);
+  main.innerHTML = `<div class="listwrap"><table>
+    <tr><th>ID</th><th>Title</th><th>Status</th><th>Pri</th><th>Type</th><th>Blocked by</th><th>Owner</th><th>Created</th></tr>
+    ${rows.map(t => `<tr class="row ${t.status === "done" ? "done" : ""}" data-id="${t.id}">
+      <td>${t.id}</td><td>${esc(t.name)}</td><td>${statusLabel(t.status)}</td>
+      <td class="pri${t.priority}">${priLabel(t.priority)}</td><td>${esc(t.type)}</td>
+      <td>${esc(blockedBy(t))}</td><td>${t.owner ? "@" + esc(t.owner) : "—"}</td>
+      <td>${esc((t.created_at || "").slice(0, 10))}</td></tr>`).join("")}
+  </table></div>`;
+}
+
+/* ---------- modal ---------- */
+function modal(title, bodyHtml, footHtml) {
+  close();
+  modalOpen = true;
+  const ov = document.createElement("div");
+  ov.className = "overlay"; ov.id = "overlay";
+  ov.innerHTML = `<div class="modal">
+    <div class="head">${title}<div class="spacer"></div></div>
+    <div class="body">${bodyHtml}</div>
+    <div class="foot">${footHtml}</div></div>`;
+  ov.addEventListener("mousedown", (e) => { if (e.target === ov) close(); });
+  document.body.appendChild(ov);
+}
+function close() { document.getElementById("overlay")?.remove(); modalOpen = false; }
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && modalOpen) close(); });
+
+function openTask(id) {
+  const t = TASKS.find(x => x.id === id); if (!t) return;
+  const opt = (vals, cur, labels) => vals.map(v =>
+    `<option value="${v}" ${v == cur ? "selected" : ""}>${labels ? labels(v) : v}</option>`).join("");
+  modal(
+    `<span class="ref">${esc(t.project)}-${t.id}</span>
+     <button data-act="prev" title="move back">◀</button>
+     <button data-act="next" title="move forward">▶</button>`,
+    `
+    <div class="frow"><label>Title</label><div><input id="f_name" value="${esc(t.name)}"></div></div>
+    <div class="grid3">
+      <div><label class="note">Status</label><select id="f_status">${opt(CFG.statuses, t.status, statusLabel)}</select></div>
+      <div><label class="note">Priority</label><select id="f_priority">${opt(CFG.priorities.map((_,i)=>i), t.priority, priLabel)}</select></div>
+      <div><label class="note">Type</label><select id="f_type">${opt(CFG.types, t.type)}</select></div>
+    </div>
+    <div class="frow"><label>Tags</label><div><input id="f_tags" value="${esc(t.tags.join(", "))}">
+      <div class="hint">comma-separated workstreams</div></div></div>
+    <div class="frow"><label>Owner</label><div class="note">${
+      t.owner ? `@${esc(t.owner)}${t.claim_age_hours != null ? ` · claimed ${t.claim_age_hours.toFixed(1)}h ago` : ""}` : "unclaimed"}
+      &nbsp; <button data-act="claim">Claim</button> <button data-act="release">Release</button></div></div>
+    <div class="frow"><label>Description</label><textarea id="f_desc">${esc(t.description)}</textarea></div>
+    <div class="frow"><label>Evidence</label><div>
+      <textarea id="f_evid">${esc(t.evidence)}</textarea>
+      <div style="display:flex;gap:6px;margin-top:4px">
+        <input id="f_append" placeholder="append a line…">
+        <button data-act="append">Append</button></div></div></div>
+    <div class="frow"><label>Blockers</label><div><textarea id="f_blockers" placeholder="one per line">${esc(t.blockers.join("\n"))}</textarea>
+      <div class="hint">external, free text — one per line</div></div></div>
+    <div class="grid3">
+      <div><label class="note">Depends on</label><input id="f_deps" value="${t.depends_on.map(i=>"#"+i).join(", ")}"></div>
+      <div><label class="note">Affects</label><input id="f_affects" value="${t.affects.map(i=>"#"+i).join(", ")}"></div>
+      <div><label class="note">Created</label><div class="note" style="padding:6px 0">${esc(t.created_at)}</div></div>
+    </div>
+    <div class="frow"><label>Attachments</label><div id="atts">
+      ${t.attachments.map(a => attRow(t, a)).join("") || `<span class="note">(none)</span>`}
+      <div style="display:flex;gap:6px;margin-top:6px;align-items:center">
+        <input type="file" id="f_file">
+        <button data-act="upload">Upload</button></div></div></div>`,
+    `<button class="primary" data-act="save">Save</button>
+     <button data-act="close">Close</button>
+     <div class="spacer"></div>
+     <button class="danger" data-act="delete">Delete task</button>`);
+
+  const base = `/api/tasks/${encodeURIComponent(t.project)}/${t.id}`;
+  const modalEl = $("#overlay");
+  modalEl.querySelector(".modal").addEventListener("click", async (e) => {
+    const act = e.target.dataset?.act;
+    if (!act) return;
+    try {
+      if (act === "close") close();
+      if (act === "save") { await save(t); }
+      if (act === "prev" || act === "next") {
+        const i = CFG.statuses.indexOf(t.status);
+        const to = CFG.statuses[Math.min(CFG.statuses.length - 1, Math.max(0, i + (act === "next" ? 1 : -1)))];
+        if (to !== t.status) { await api(base, {method: "PATCH", body: {status: to}}); await reload(); openTask(id); }
+      }
+      if (act === "claim") {
+        const owner = prompt("Claim as (owner name):"); if (!owner) return;
+        await api(base, {method: "PATCH", body: {claim: {owner}}}); await reload(); openTask(id);
+      }
+      if (act === "release") {
+        await api(base, {method: "PATCH", body: {release: {owner: t.owner}}}); await reload(); openTask(id);
+      }
+      if (act === "append") {
+        const text = $("#f_append").value.trim(); if (!text) return;
+        await api(base, {method: "PATCH", body: {append_evidence: text}});
+        await reload(); openTask(id); note("evidence appended");
+      }
+      if (act === "upload") {
+        const f = $("#f_file").files[0]; if (!f) return;
+        const b64 = await new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.readAsDataURL(f); });
+        await api(`${base}/attachments`, {method: "POST", body: {filename: f.name, content_b64: b64}});
+        await reload(); openTask(id); note("uploaded");
+      }
+      if (act === "detach") {
+        const attId = e.target.dataset.id;
+        await api(`${base}/attachments/${attId}`, {method: "DELETE"});
+        await reload(); openTask(id); note("detached");
+      }
+      if (act === "delete") {
+        if (!confirm(`Delete ${t.project}-${t.id} "${t.name}"?`)) return;
+        await api(base, {method: "DELETE"}); close(); await reload(); note("deleted");
+      }
+    } catch (err) { note(err.message, true); }
+  });
+}
+function attRow(t, a) {
+  const href = `/file/${encodeURIComponent(t.project)}/${t.id}/${a.id}/${encodeURIComponent(a.filename)}`;
+  return `<div class="att"><a href="${href}" target="_blank" rel="noopener">${esc(a.filename)}</a>
+    <span class="sz">${human(a.size)} · ${a.sha256.slice(0, 8)}…</span>
+    <button data-act="detach" data-id="${a.id}" title="remove">✕</button></div>`;
+}
+async function save(t) {
+  const body = {
+    name: $("#f_name").value, status: $("#f_status").value,
+    priority: +$("#f_priority").value, type: $("#f_type").value,
+    tags: $("#f_tags").value.split(",").map(s => s.trim()).filter(Boolean),
+    description: $("#f_desc").value, evidence: $("#f_evid").value,
+    blockers: $("#f_blockers").value.split("\n").map(s => s.trim()).filter(Boolean),
+    depends_on: $("#f_deps").value.split(",").map(s => s.trim()).filter(Boolean),
+    affects: $("#f_affects").value.split(",").map(s => s.trim()).filter(Boolean),
+  };
+  await api(`/api/tasks/${encodeURIComponent(t.project)}/${t.id}`, {method: "PATCH", body});
+  await reload(); note("saved"); close();
+}
+
+/* ---------- new task ---------- */
+function openNew() {
+  const opt = (vals, cur, labels) => vals.map(v =>
+    `<option value="${v}" ${v == cur ? "selected" : ""}>${labels ? labels(v) : v}</option>`).join("");
+  modal(`<b>New task</b> <span class="ref">${esc(PROJECT)}</span>`,
+    `<div class="frow"><label>Title</label><input id="n_name" placeholder="what needs to happen"></div>
+     <div class="grid3">
+      <div><label class="note">Status</label><select id="n_status">${opt(CFG.statuses, "todo", statusLabel)}</select></div>
+      <div><label class="note">Priority</label><select id="n_priority">${opt(CFG.priorities.map((_,i)=>i), CFG.default_priority, priLabel)}</select></div>
+      <div><label class="note">Type</label><select id="n_type">${opt(CFG.types, CFG.default_type)}</select></div></div>
+     <div class="frow"><label>Description</label><textarea id="n_desc"></textarea></div>
+     <div class="frow"><label>Tags</label><input id="n_tags" placeholder="comma-separated"></div>
+     <div class="frow"><label>Depends on</label><input id="n_deps" placeholder="#1, #4"></div>`,
+    `<button class="primary" data-act="create">Create</button>
+     <button data-act="close">Cancel</button>`);
+  $("#overlay .modal").addEventListener("click", async (e) => {
+    if (e.target.dataset?.act !== "create") { if (e.target.dataset?.act === "close") close(); return; }
+    try {
+      const t = await api("/api/tasks", {method: "POST", body: {
+        project: PROJECT, name: $("#n_name").value,
+        status: $("#n_status").value, priority: +$("#n_priority").value, type: $("#n_type").value,
+        description: $("#n_desc").value,
+        tags: $("#n_tags").value.split(",").map(s => s.trim()).filter(Boolean),
+        depends_on: $("#n_deps").value.split(",").map(s => s.trim()).filter(Boolean),
+      }});
+      close(); await reload(); note(`added ${t.ref}`);
+    } catch (err) { note(err.message, true); }
+  });
+  $("#n_name").focus();
+}
+
+/* ---------- project picker ---------- */
+function showPicker() {
+  const el = document.createElement("div");
+  el.className = "pick"; el.id = "pick";
+  el.innerHTML = `<h1>Select a project</h1>` +
+    (CFG.projects.length ? CFG.projects.map(p =>
+      `<button data-p="${esc(p.name)}">${esc(p.name)} <span class="note">(${p.total} tasks)</span></button>`).join("")
+      : `<span class="note">no projects yet — create tasks with <code>atx add</code> first</span>`);
+  el.addEventListener("click", (e) => {
+    const p = e.target.closest("button")?.dataset.p;
+    if (p) { localStorage.atx_project = p; el.remove(); setProject(p); }
+  });
+  document.body.appendChild(el);
+}
+
+/* ---------- boot / polling ---------- */
+function setProject(p) {
+  PROJECT = p;
+  $("#proj").value = p;
+  location.hash = "";
+  reload();
+}
+async function reload(keepModal) {
+  if (!PROJECT) return;
+  const d = await api("/api/tasks?project=" + encodeURIComponent(PROJECT));
+  TASKS = d.tasks;
+  const h = JSON.stringify(TASKS);
+  const changed = h !== lastHash; lastHash = h;
+  render();
+  if (changed && modalOpen && !keepModal) { /* keep modal open; views refresh behind */ }
+  $("#live").classList.toggle("off", false);
+}
+async function boot() {
+  CFG = await api("/api/config");
+  $("#topbar").style.display = "flex";
+  const sel = $("#proj");
+  sel.innerHTML = CFG.projects.map(p => `<option>${esc(p.name)}</option>`).join("") +
+    (CFG.projects.length ? "" : `<option value="">(no projects)</option>`);
+  sel.onchange = () => { localStorage.atx_project = sel.value; setProject(sel.value); };
+  const fromUrl = new URLSearchParams(location.search).get("project");
+  const p = fromUrl || localStorage.atx_project ||
+            (CFG.projects.some(x => x.name === CFG.default_project) ? CFG.default_project : null);
+  if (p) setProject(p); else if (CFG.projects.length) showPicker();
+  $("#vBoard").onclick = () => { VIEW = "board"; localStorage.atx_view = VIEW; render(); };
+  $("#vList").onclick = () => { VIEW = "list"; localStorage.atx_view = VIEW; render(); };
+  $("#newTask").onclick = () => PROJECT && openNew();
+  $("#main").addEventListener("click", (e) => {
+    const el = e.target.closest("[data-id]");
+    if (el && !e.target.closest("button,a")) openTask(+el.dataset.id);
+  });
+  setInterval(async () => {
+    if (!modalOpen && !document.hidden && PROJECT) { try { await reload(); } catch {} }
+  }, 2000);
+}
+boot().catch(err => document.body.insertAdjacentHTML("afterbegin",
+  `<div class="pick"><span class="err">${esc(err.message)}</span></div>`));
+</script>
+</body>
+</html>

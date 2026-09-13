@@ -96,8 +96,9 @@ agenttasker import PATH [--mode merge|replace] [--dry-run]
 agenttasker rm REF                # permanent; refs in other tasks are scrubbed
 agenttasker projects
 agenttasker board                 # TUI; picks a project first when none is given; v: board/list
+agenttasker serve                 # web UI (board+list, editing, attachments) on 127.0.0.1:8988
+agenttasker mcp                   # stdio MCP server
 ```
-
 Global flags (before or after the subcommand): `-p/--project NAME`, `--db PATH`.
 List-valued flags (`--dep`, `--affects`, `--blocker`) REPLACE the list when given;
 pass `--dep ''` / `--blocker ''` to clear.
