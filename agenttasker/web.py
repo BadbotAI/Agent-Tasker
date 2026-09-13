@@ -52,6 +52,7 @@ def _task_payload(store: Store, task) -> dict:
         {k: a[k] for k in ("id", "filename", "size", "sha256", "created_at")}
         for a in store.list_attachments(task)
     ]
+    data["events"] = store.events(task, 20)
     return data
 
 

@@ -44,6 +44,16 @@ CREATE TABLE IF NOT EXISTS attachments (
     created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_attachments_task ON attachments(project, task_id);
+
+CREATE TABLE IF NOT EXISTS events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project     TEXT NOT NULL,
+    task_id     INTEGER NOT NULL,
+    ts          TEXT NOT NULL,
+    kind        TEXT NOT NULL,                -- status | claim | release | handoff
+    detail      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_events_task ON events(project, task_id);
 """
 
 # columns added after initial release; older databases are migrated in place

@@ -227,6 +227,41 @@ class AttachmentTest(unittest.TestCase):
                 self.assertEqual(dest.read_attachment_bytes(imported, atts[0]["id"]), payload_bytes)
 
 
+class EventLogTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Store(Path(self.tmp.name) / "tasks.db")
+        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(self.store.close)
+
+    def test_status_and_ownership_events(self):
+        t = self.store.add_task("demo", "watched", status="todo")
+        self.store.claim(t, "agent-a")                       # claim + status event
+        t = self.store.get("demo", t.id)
+        self.store.set_status(t, "in_review")                # status event
+        t = self.store.get("demo", t.id)
+        self.store.handoff(t, "agent-b", from_owner="agent-a")   # handoff event
+        t = self.store.get("demo", t.id)
+        self.store.release(t, owner="agent-b")               # release event
+        t = self.store.get("demo", t.id)
+        events = self.store.events(t)                        # newest first
+        kinds = [e["kind"] for e in events]
+        self.assertEqual(kinds, ["release", "handoff", "status", "claim", "status"])
+        self.assertEqual(events[-1]["detail"], "todo -> in_progress")
+        self.assertEqual(events[3]["detail"], "claimed by agent-a")
+        self.assertEqual(events[2]["detail"], "in_progress -> in_review")
+        self.assertEqual(events[1]["detail"], "agent-a -> agent-b")
+        self.assertEqual(events[0]["detail"], "released by agent-b")
+
+    def test_no_event_for_same_status_or_field_edits(self):
+        t = self.store.add_task("demo", "quiet", status="todo")
+        self.store.update(t, status="todo")                  # no-op status
+        t = self.store.get("demo", t.id)
+        self.store.update(t, name="renamed")                 # non-status field
+        t = self.store.get("demo", t.id)
+        self.assertEqual(self.store.events(t), [])
+
+
 class TaskTypeTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

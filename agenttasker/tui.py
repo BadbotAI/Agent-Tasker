@@ -180,11 +180,25 @@ class Board:
         return 0
 
     # --- drawing
+    VIEW_CYCLE = ("board", "list", "agents")
+
     def draw(self, stdscr) -> None:
         if self.view == "list":
             self.draw_list(stdscr)
             return
+        if self.view == "agents":
+            self.draw_agents(stdscr)
+            return
         self.draw_board(stdscr)
+
+    def view_tasks(self) -> list[Task]:
+        """Tasks shown by the current non-board view (drives selection)."""
+        if self.view == "agents":
+            return sorted(
+                (t for t in self.tasks if t.owner),
+                key=lambda t: (t.owner, t.priority, t.id),
+            )
+        return self.list_tasks_sorted()
 
     def draw_list(self, stdscr) -> None:
         """Flat priority-ordered table of every task in the project."""
@@ -192,10 +206,10 @@ class Board:
         height, width = stdscr.getmaxyx()
         _safe(stdscr, 0, 0, f" {self.project} — list view · todo first, done last", curses.A_BOLD)
         _safe(stdscr, 1, 0,
-              " ↑↓ select · Enter: details · v: board · q: quit  · auto-reload on db change",
+              " ↑↓ select · Enter: details · v: next view (board/list/agents) · q: quit",
               curses.A_DIM)
 
-        tasks = self.list_tasks_sorted()
+        tasks = self.view_tasks()
         self.list_row = max(0, min(self.list_row, max(0, len(tasks) - 1)))
 
         id_w, st_w, pri_w, ty_w, bl_w, cr_w = 6, 11, 3, 11, 14, 10
@@ -235,10 +249,52 @@ class Board:
         stdscr.noutrefresh()
         curses.doupdate()
 
+    def draw_agents(self, stdscr) -> None:
+        """Who is working on what: claimed tasks grouped by owner."""
+        stdscr.erase()
+        height, width = stdscr.getmaxyx()
+        _safe(stdscr, 0, 0, f" {self.project} — agents · active claims", curses.A_BOLD)
+        _safe(stdscr, 1, 0,
+              " ↑↓ select · Enter: details · v: next view (board/list/agents) · q: quit",
+              curses.A_DIM)
+
+        tasks = self.view_tasks()
+        self.list_row = max(0, min(self.list_row, max(0, len(tasks) - 1)))
+
+        id_w, ow_w, st_w, pri_w, ty_w = 6, 18, 11, 3, 11
+        cl_w, cr_w = 17, 10
+        title_w = max(10, width - (id_w + ow_w + st_w + pri_w + ty_w + cl_w + cr_w + 7))
+        header = (f"{'ID':<{id_w}} {'OWNER':<{ow_w}} {'TITLE':<{title_w}} {'STATUS':<{st_w}} "
+                  f"{'PRI':<{pri_w}} {'TYPE':<{ty_w}} {'CLAIMED':<{cl_w}} AGE")
+        _safe(stdscr, 2, 0, header[: width - 1], curses.A_BOLD | curses.A_UNDERLINE)
+
+        visible = height - 4
+        if self.list_row < self.list_off:
+            self.list_off = self.list_row
+        elif self.list_row >= self.list_off + visible:
+            self.list_off = self.list_row - visible + 1
+        self.list_off = max(0, min(self.list_off, max(0, len(tasks) - visible)))
+
+        for i in range(self.list_off, min(len(tasks), self.list_off + visible)):
+            t = tasks[i]
+            age = claim_age_hours(t)
+            age_txt = f"{age:.1f}h" if age is not None else "—"
+            row = (f"{t.id:<{id_w}} {t.owner[:ow_w - 1]:<{ow_w}} {t.name[:title_w - 1]:<{title_w}} "
+                   f"{t.status:<{st_w}} {priority_label(t.priority):<{pri_w}} {t.type:<{ty_w}} "
+                   f"{t.claimed_at[:16]:<{cl_w}} {age_txt}")
+            attr = curses.A_REVERSE if i == self.list_row else 0
+            _safe(stdscr, 3 + i - self.list_off, 0, row[: width - 1], attr)
+
+        if not tasks:
+            _safe(stdscr, 3, 0, " (no active claims)", curses.A_DIM)
+        more = " ↓ more" if self.list_off + visible < len(tasks) else ""
+        _safe(stdscr, height - 1, 0, f" {len(tasks)} claim(s){more}", curses.A_DIM)
+        stdscr.noutrefresh()
+        curses.doupdate()
+
     def list_tasks_sorted(self) -> list[Task]:
         order = {s: i for i, s in enumerate(LIST_STATUS_ORDER)}
         return sorted(self.tasks, key=lambda t: (order[t.status], t.priority, t.id))
-
     def draw_board(self, stdscr) -> None:
         stdscr.erase()
         height, width = stdscr.getmaxyx()
@@ -392,9 +448,10 @@ class Board:
     # --- input
     def handle(self, stdscr, ch: int) -> None:
         self.message = ""
-        if ch in (ord("v"), ord("V")):  # cycle board <-> list
-            self.view = "list" if self.view == "board" else "board"
-        elif self.view == "list":
+        if ch in (ord("v"), ord("V")):  # cycle board -> list -> agents
+            idx = self.VIEW_CYCLE.index(self.view) if self.view in self.VIEW_CYCLE else 0
+            self.view = self.VIEW_CYCLE[(idx + 1) % len(self.VIEW_CYCLE)]
+        elif self.view in ("list", "agents"):
             self.handle_list(stdscr, ch)
         elif ch in (ord("q"), ord("Q")):
             self.done = True
@@ -429,7 +486,7 @@ class Board:
 
 
     def handle_list(self, stdscr, ch: int) -> None:
-        tasks = self.list_tasks_sorted()
+        tasks = self.view_tasks()
         if ch in (ord("q"), ord("Q")):
             self.done = True
         elif ch in (curses.KEY_UP, ord("k"), ord("K")):
@@ -644,6 +701,10 @@ class Board:
             block("affects", "AFFECTS", dep_lines(task.affects, False)),
             block(None, "BLOCKS (TASKS DEPENDING ON THIS)", dep_lines([t.id for t in dependents], True)),
             block(None, "ATTACHMENTS", att_lines),
+            block(None, "EVENT LOG", [
+                (f"{e['ts'][:19]}  {e['kind']:<8} {e['detail']}", dim)
+                for e in self.store.events(task, 20)
+            ] or [("(no events yet)", dim)]),
             block(None, "STATE", [("─", 0), state]),
             block(None, "DATES", [(f"created {task.created_at}  ·  updated {task.updated_at}", dim)]),
         ]

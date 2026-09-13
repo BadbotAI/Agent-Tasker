@@ -469,6 +469,8 @@ class Store:
             f"UPDATE tasks SET {assignments} WHERE project=? AND id=?",
             (*row_values, task.project, task.id),
         )
+        if "status" in values and values["status"] != task.status:
+            self.log_event(task, "status", f"{task.status} -> {values['status']}")
         self.db.commit()
         updated = self.get_by_id(task.project, task.id)
         assert updated is not None
@@ -507,14 +509,18 @@ class Store:
             " WHERE project=? AND id=? AND (owner='' OR owner=? OR ?)",
             (owner, now, IN_PROGRESS, now, task.project, task.id, owner, int(force)),
         )
-        self.db.commit()
         if cur.rowcount == 0:
+            self.db.rollback()
             fresh = self.get_by_id(task.project, task.id)
             holder = fresh.owner if fresh else "?"
             raise TaskError(
                 f"{display_ref(task.project, task.id)} already claimed by {holder!r}"
                 f" (since {(fresh.claimed_at if fresh else '?')}); use --force to take it"
             )
+        if task.status != IN_PROGRESS:
+            self.log_event(task, "status", f"{task.status} -> {IN_PROGRESS}")
+        self.log_event(task, "claim", f"claimed by {owner}")
+        self.db.commit()
         updated = self.get_by_id(task.project, task.id)
         assert updated is not None
         return updated
@@ -527,14 +533,16 @@ class Store:
             " WHERE project=? AND id=? AND (owner='' OR owner=? OR ?)",
             (utcnow(), task.project, task.id, owner or "", int(force)),
         )
-        self.db.commit()
         if cur.rowcount == 0:
+            self.db.rollback()
             fresh = self.get_by_id(task.project, task.id)
             holder = fresh.owner if fresh else "?"
             raise TaskError(
                 f"{display_ref(task.project, task.id)} is claimed by {holder!r};"
                 " release with the matching --owner or --force"
             )
+        self.log_event(task, "release", f"released by {task.owner or owner or 'force'}")
+        self.db.commit()
         updated = self.get_by_id(task.project, task.id)
         assert updated is not None
         return updated
@@ -551,14 +559,16 @@ class Store:
             " WHERE project=? AND id=? AND (owner='' OR owner=? OR ?)",
             (new_owner, now, now, task.project, task.id, from_owner.strip(), int(force)),
         )
-        self.db.commit()
         if cur.rowcount == 0:
+            self.db.rollback()
             fresh = self.get_by_id(task.project, task.id)
             holder = fresh.owner if fresh else "?"
             raise TaskError(
                 f"{display_ref(task.project, task.id)} is claimed by {holder!r};"
                 " handoff requires the current owner (or --force)"
             )
+        self.log_event(task, "handoff", f"{task.owner or '(none)'} -> {new_owner}")
+        self.db.commit()
         updated = self.get_by_id(task.project, task.id)
         assert updated is not None
         return updated
@@ -643,6 +653,25 @@ class Store:
             for t in self.list_tasks(task.project)
             if task.id in t.depends_on and t.id != task.id
         ]
+
+    # --- event log ---------------------------------------------------------
+    # Status and ownership changes are appended here and shown in the
+    # single-task views.
+
+    def log_event(self, task: Task, kind: str, detail: str) -> None:
+        self.db.execute(
+            "INSERT INTO events (project, task_id, ts, kind, detail) VALUES (?,?,?,?,?)",
+            (task.project, task.id, utcnow(), kind, detail),
+        )
+
+    def events(self, task: Task, limit: int = 50) -> list[dict]:
+        """Events for one task, newest first."""
+        rows = self.db.execute(
+            "SELECT ts, kind, detail FROM events WHERE project=? AND task_id=?"
+            " ORDER BY id DESC LIMIT ?",
+            (task.project, task.id, limit),
+        ).fetchall()
+        return [{"ts": r["ts"], "kind": r["kind"], "detail": r["detail"]} for r in rows]
 
     # --- attachments -----------------------------------------------------------
     # Files live on disk under <db_dir>/attachments/<project>/<task_id>/<hash>-<name>,

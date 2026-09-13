@@ -121,6 +121,11 @@ tr.done td { color: var(--dim); }
 button.mini { padding: 1px 8px; font-size: 11px; }
 .trio { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;
         flex: 1 1 auto; min-height: 220px; }
+.colstack { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+.ev { display: flex; gap: 8px; font-size: 12px; padding: 2px 0;
+      border-bottom: 1px solid var(--line); }
+.ev .evts { color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ev .evkind { color: var(--accent); min-width: 52px; }
 .pane { display: flex; flex-direction: column; min-height: 0;
         border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
 .pane > .fieldhead { flex: 0 0 auto; }
@@ -153,6 +158,7 @@ button.mini { padding: 1px 8px; font-size: 11px; }
   <div class="seg">
     <button id="vBoard">Board</button>
     <button id="vList">List</button>
+    <button id="vAgents">Agents</button>
   </div>
   <button class="primary" id="newTask">+ New task</button>
   <input id="q" placeholder="search title/description…" style="width: 220px">
@@ -225,10 +231,12 @@ function render() {
   const main = $("#main");
   document.documentElement.style.setProperty("--proj", PROJECT);
   if (VIEW === "list") renderList(main);
+  else if (VIEW === "agents") renderAgents(main);
   else if (EXPANDED) renderExpanded(main, EXPANDED);
   else renderBoard(main);
   $("#vBoard").classList.toggle("on", VIEW === "board");
   $("#vList").classList.toggle("on", VIEW === "list");
+  $("#vAgents").classList.toggle("on", VIEW === "agents");
 }
 function renderBoard(main) {
   main.innerHTML = `<div class="board">` + CFG.statuses.map(st => {
@@ -254,6 +262,21 @@ function renderList(main) {
       <td class="pri${t.priority}">${priLabel(t.priority)}</td><td>${esc(t.type)}</td>
       <td>${esc(blockedBy(t))}</td><td>${t.owner ? "@" + esc(t.owner) : "—"}</td>
       <td>${esc((t.created_at || "").slice(0, 10))}</td></tr>`).join("")}
+  </table></div>`;
+}
+
+function renderAgents(main) {
+  const rows = [...visibleTasks()].filter(t => t.owner)
+    .sort((a, b) => a.owner.localeCompare(b.owner) || a.priority - b.priority || a.id - b.id);
+  main.innerHTML = `<div class="listwrap"><table>
+    <tr><th>ID</th><th>Owner</th><th>Title</th><th>Status</th><th>Pri</th><th>Type</th><th>Claimed</th><th>Age</th></tr>
+    ${rows.map(t => `<tr class="row" data-id="${t.id}">
+      <td>${t.id}</td><td>@${esc(t.owner)}</td><td>${esc(t.name)}</td>
+      <td>${statusLabel(t.status)}</td>
+      <td class="pri${t.priority}">${priLabel(t.priority)}</td><td>${esc(t.type)}</td>
+      <td>${esc((t.claimed_at || "").slice(0, 19).replace("T", " "))}</td>
+      <td>${t.claim_age_hours != null ? t.claim_age_hours.toFixed(1) + "h" : "—"}</td></tr>`).join("")
+      || `<tr><td colspan="8" class="note">no active claims</td></tr>`}
   </table></div>`;
 }
 
@@ -367,12 +390,21 @@ function openTask(id) {
           <input id="f_append" placeholder="append a line…">
           <button class="mini" data-act="append">Append</button></div>
       </div>
-      <div class="pane">
-        <div class="fieldhead"><label>Attachments</label></div>
-        <div class="content">${t.attachments.map(a => attRow(t, a)).join("") || '<span class="note">(none)</span>'}</div>
-        <div style="display:flex;gap:6px;margin-top:6px;align-items:center;flex:0 0 auto">
-          <input type="file" id="f_file">
-          <button class="mini" data-act="upload">Upload</button></div>
+      <div class="colstack">
+        <div class="pane" style="flex: 0 0 45%;">
+          <div class="fieldhead"><label>Attachments</label></div>
+          <div class="content">${t.attachments.map(a => attRow(t, a)).join("") || '<span class="note">(none)</span>'}</div>
+          <div style="display:flex;gap:6px;margin-top:6px;align-items:center;flex:0 0 auto">
+            <input type="file" id="f_file">
+            <button class="mini" data-act="upload">Upload</button></div>
+        </div>
+        <div class="pane" style="flex: 1 1 auto;">
+          <div class="fieldhead"><label>Event log</label></div>
+          <div class="content">${(t.events || []).map(e =>
+            `<div class="ev"><span class="evts">${esc((e.ts || "").slice(0, 19).replace("T", " "))}</span>` +
+            `<span class="evkind">${esc(e.kind)}</span>${esc(e.detail)}</div>`).join("")
+            || '<span class="note">(no events yet)</span>'}</div>
+        </div>
       </div>
     </div>`,
     `<button class="primary" data-act="save">Save</button>
@@ -549,6 +581,7 @@ async function boot() {
   if (p) setProject(p); else if (CFG.projects.length) showPicker();
   $("#vBoard").onclick = () => { VIEW = "board"; EXPANDED = null; localStorage.atx_view = VIEW; render(); };
   $("#vList").onclick = () => { VIEW = "list"; EXPANDED = null; localStorage.atx_view = VIEW; render(); };
+  $("#vAgents").onclick = () => { VIEW = "agents"; EXPANDED = null; localStorage.atx_view = VIEW; render(); };
   $("#newTask").onclick = () => PROJECT && openNew();
   $("#main").addEventListener("click", (e) => {
     const dep = e.target.closest(".deplink");
