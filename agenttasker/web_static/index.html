@@ -103,20 +103,32 @@ tr.done td { color: var(--dim); }
            align-items: flex-start; justify-content: center; padding: 40px 16px;
            overflow-y: auto; z-index: 10; }
 .modal { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-         width: 720px; max-width: 100%; padding: 0; }
+         width: 900px; max-width: 100%; max-height: 92vh; padding: 0;
+         display: flex; flex-direction: column; }
 .modal .head { display: flex; gap: 8px; align-items: center; padding: 12px 16px;
-               border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+               border-bottom: 1px solid var(--line); flex-wrap: wrap; flex: 0 0 auto; }
 .modal .head .ref { color: var(--dim); }
 .modal .head .spacer { flex: 1; }
-.modal .body { padding: 12px 16px; display: grid; gap: 12px; }
+.modal .body { padding: 12px 16px; display: flex; flex-direction: column; gap: 12px;
+               flex: 1 1 auto; min-height: 0; overflow: auto; }
 .modal .foot { display: flex; gap: 8px; padding: 12px 16px;
-               border-top: 1px solid var(--line); flex-wrap: wrap; }
+               border-top: 1px solid var(--line); flex-wrap: wrap; flex: 0 0 auto; }
 .modal .foot .spacer { flex: 1; }
-.frow { display: grid; grid-template-columns: 130px 1fr; gap: 10px; align-items: start; }
-.frow label { color: var(--dim); padding-top: 6px; font-size: 12px;
-              text-transform: uppercase; letter-spacing: .05em; }
-.frow .hint { color: var(--dim); font-size: 11px; margin-top: 2px; }
-.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.static { padding: 6px 0; white-space: pre-wrap; word-break: break-word; }
+.fieldhead { display: flex; align-items: baseline; gap: 8px; }
+.fieldhead label { color: var(--dim); font-size: 11px; text-transform: uppercase;
+                   letter-spacing: .08em; flex: 1; }
+button.mini { padding: 1px 8px; font-size: 11px; }
+.trio { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;
+        flex: 1 1 auto; min-height: 220px; }
+.pane { display: flex; flex-direction: column; min-height: 0;
+        border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.pane > .fieldhead { flex: 0 0 auto; }
+.pane .content { flex: 1 1 auto; min-height: 0; overflow: auto;
+                 white-space: pre-wrap; word-break: break-word; font-size: 13px; }
+.pane textarea { width: 100%; height: 100%; min-height: 0; flex: 1 1 auto; resize: none; }
+.topfields { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.topfields .full { grid-column: 1 / -1; }
 .att { display: flex; gap: 10px; align-items: center; padding: 4px 0; }
 .att .sz { color: var(--dim); font-size: 12px; }
 .att form { display: inline; }
@@ -283,68 +295,102 @@ function modal(title, bodyHtml, footHtml) {
 function close() { document.getElementById("overlay")?.remove(); modalOpen = false; }
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && modalOpen) close(); });
 
+let EDIT = new Set();
+
+function fld(key, label, value, inputHtml, full) {
+  const editing = EDIT.has(key);
+  return `<div class="${full ? "full " : ""}fieldhead-wrap">
+    <div class="fieldhead"><label>${label}</label>
+      <button class="mini" data-act="${editing ? "editdone" : "edit"}" data-k="${key}">${editing ? "done" : "edit"}</button>
+    </div>
+    ${editing ? inputHtml : `<div class="static">${esc(value) || '<span class="note">—</span>'}</div>`}
+  </div>`;
+}
+
 function openTask(id) {
   const t = TASKS.find(x => x.id === id); if (!t) return;
   const opt = (vals, cur, labels) => vals.map(v =>
     `<option value="${v}" ${v == cur ? "selected" : ""}>${labels ? labels(v) : v}</option>`).join("");
+  const ownerBits = t.owner
+    ? `@${esc(t.owner)}${t.claim_age_hours != null ? ` · ${t.claim_age_hours.toFixed(1)}h` : ""}`
+    : `unclaimed`;
+
   modal(
     `<span class="ref">${esc(t.project)}-${t.id}</span>
      <button data-act="prev" title="move back">◀</button>
      <button data-act="next" title="move forward">▶</button>`,
     `
-    <div class="frow"><label>Title</label><div><input id="f_name" value="${esc(t.name)}"></div></div>
-    <div class="grid3">
-      <div><label class="note">Status</label><select id="f_status">${opt(CFG.statuses, t.status, statusLabel)}</select></div>
-      <div><label class="note">Priority</label><select id="f_priority">${opt(CFG.priorities.map((_,i)=>i), t.priority, priLabel)}</select></div>
-      <div><label class="note">Type</label><select id="f_type">${opt(CFG.types, t.type)}</select></div>
+    <div class="topfields">
+      ${fld("name", "Title", t.name, `<input id="f_name" value="${esc(t.name)}">`, true)}
+      <div><div class="fieldhead"><label>Status</label></div>
+        <select id="f_status">${opt(CFG.statuses, t.status, statusLabel)}</select></div>
+      <div><div class="fieldhead"><label>Priority</label></div>
+        <select id="f_priority">${opt(CFG.priorities.map((_, i) => i), t.priority, priLabel)}</select></div>
+      <div><div class="fieldhead"><label>Type</label></div>
+        <select id="f_type">${opt(CFG.types, t.type)}</select></div>
+      <div><div class="fieldhead"><label>Owner</label></div>
+        <div class="static" style="display:flex;gap:6px;align-items:center">${ownerBits}
+          <button class="mini" data-act="claim">claim</button>
+          <button class="mini" data-act="release">release</button></div></div>
+      ${fld("tags", "Tags", t.tags.join(", "), `<input id="f_tags" value="${esc(t.tags.join(", "))}" placeholder="comma-separated">`)}
+      ${fld("depends_on", "Depends on", t.depends_on.map(i => "#" + i).join(", "),
+            `<input id="f_deps" value="${t.depends_on.map(i => "#" + i).join(", ")}" placeholder="#1, #4">`)}
+      ${fld("affects", "Affects", t.affects.map(i => "#" + i).join(", "),
+            `<input id="f_affects" value="${t.affects.map(i => "#" + i).join(", ")}" placeholder="#2">`)}
+      ${fld("blockers", "Blockers", t.blockers.join(", "),
+            `<input id="f_blockers" value="${esc(t.blockers.join(", "))}" placeholder="comma-separated">`)}
     </div>
-    <div class="frow"><label>Tags</label><div><input id="f_tags" value="${esc(t.tags.join(", "))}">
-      <div class="hint">comma-separated workstreams</div></div></div>
-    <div class="frow"><label>Owner</label><div class="note">${
-      t.owner ? `@${esc(t.owner)}${t.claim_age_hours != null ? ` · claimed ${t.claim_age_hours.toFixed(1)}h ago` : ""}` : "unclaimed"}
-      &nbsp; <button data-act="claim">Claim</button> <button data-act="release">Release</button></div></div>
-    <div class="frow"><label>Description</label><textarea id="f_desc">${esc(t.description)}</textarea></div>
-    <div class="frow"><label>Evidence</label><div>
-      <textarea id="f_evid">${esc(t.evidence)}</textarea>
-      <div style="display:flex;gap:6px;margin-top:4px">
-        <input id="f_append" placeholder="append a line…">
-        <button data-act="append">Append</button></div></div></div>
-    <div class="frow"><label>Blockers</label><div><textarea id="f_blockers" placeholder="one per line">${esc(t.blockers.join("\n"))}</textarea>
-      <div class="hint">external, free text — one per line</div></div></div>
-    <div class="grid3">
-      <div><label class="note">Depends on</label><input id="f_deps" value="${t.depends_on.map(i=>"#"+i).join(", ")}"></div>
-      <div><label class="note">Affects</label><input id="f_affects" value="${t.affects.map(i=>"#"+i).join(", ")}"></div>
-      <div><label class="note">Created</label><div class="note" style="padding:6px 0">${esc(t.created_at)}</div></div>
-    </div>
-    <div class="frow"><label>Attachments</label><div id="atts">
-      ${t.attachments.map(a => attRow(t, a)).join("") || `<span class="note">(none)</span>`}
-      <div style="display:flex;gap:6px;margin-top:6px;align-items:center">
-        <input type="file" id="f_file">
-        <button data-act="upload">Upload</button></div></div></div>`,
+    <div class="trio">
+      <div class="pane">
+        <div class="fieldhead"><label>Description</label>
+          <button class="mini" data-act="${EDIT.has("description") ? "editdone" : "edit"}" data-k="description">${EDIT.has("description") ? "done" : "edit"}</button></div>
+        ${EDIT.has("description")
+          ? `<textarea id="f_desc">${esc(t.description)}</textarea>`
+          : `<div class="content">${esc(t.description) || '<span class="note">(none)</span>'}</div>`}
+      </div>
+      <div class="pane">
+        <div class="fieldhead"><label>Evidence</label>
+          <button class="mini" data-act="${EDIT.has("evidence") ? "editdone" : "edit"}" data-k="evidence">${EDIT.has("evidence") ? "done" : "edit"}</button></div>
+        ${EDIT.has("evidence")
+          ? `<textarea id="f_evid">${esc(t.evidence)}</textarea>`
+          : `<div class="content">${esc(t.evidence) || '<span class="note">(none)</span>'}</div>`}
+        <div style="display:flex;gap:6px;margin-top:6px;flex:0 0 auto">
+          <input id="f_append" placeholder="append a line…">
+          <button class="mini" data-act="append">Append</button></div>
+      </div>
+      <div class="pane">
+        <div class="fieldhead"><label>Attachments</label></div>
+        <div class="content">${t.attachments.map(a => attRow(t, a)).join("") || '<span class="note">(none)</span>'}</div>
+        <div style="display:flex;gap:6px;margin-top:6px;align-items:center;flex:0 0 auto">
+          <input type="file" id="f_file">
+          <button class="mini" data-act="upload">Upload</button></div>
+      </div>
+    </div>`,
     `<button class="primary" data-act="save">Save</button>
      <button data-act="close">Close</button>
      <div class="spacer"></div>
      <button class="danger" data-act="delete">Delete task</button>`);
 
   const base = `/api/tasks/${encodeURIComponent(t.project)}/${t.id}`;
-  const modalEl = $("#overlay");
-  modalEl.querySelector(".modal").addEventListener("click", async (e) => {
+  $("#overlay .modal").addEventListener("click", async (e) => {
     const act = e.target.dataset?.act;
     if (!act) return;
     try {
       if (act === "close") close();
+      if (act === "edit") { EDIT.add(e.target.dataset.k); openTask(id); return; }
+      if (act === "editdone") { EDIT.delete(e.target.dataset.k); openTask(id); return; }
       if (act === "save") { await save(t); }
       if (act === "prev" || act === "next") {
         const i = CFG.statuses.indexOf(t.status);
         const to = CFG.statuses[Math.min(CFG.statuses.length - 1, Math.max(0, i + (act === "next" ? 1 : -1)))];
-        if (to !== t.status) { await api(base, {method: "PATCH", body: {status: to}}); await reload(); openTask(id); }
+        if (to !== t.status) { await api(base, {method: "PATCH", body: {status: to}}); await reload(); EDIT.clear(); openTask(id); }
       }
       if (act === "claim") {
         const owner = prompt("Claim as (owner name):"); if (!owner) return;
-        await api(base, {method: "PATCH", body: {claim: {owner}}}); await reload(); openTask(id);
+        await api(base, {method: "PATCH", body: {claim: {owner}}}); await reload(); EDIT.clear(); openTask(id);
       }
       if (act === "release") {
-        await api(base, {method: "PATCH", body: {release: {owner: t.owner}}}); await reload(); openTask(id);
+        await api(base, {method: "PATCH", body: {release: {owner: t.owner}}}); await reload(); EDIT.clear(); openTask(id);
       }
       if (act === "append") {
         const text = $("#f_append").value.trim(); if (!text) return;
@@ -376,17 +422,22 @@ function attRow(t, a) {
     <button data-act="detach" data-id="${a.id}" title="remove">✕</button></div>`;
 }
 async function save(t) {
-  const body = {
-    name: $("#f_name").value, status: $("#f_status").value,
-    priority: +$("#f_priority").value, type: $("#f_type").value,
-    tags: $("#f_tags").value.split(",").map(s => s.trim()).filter(Boolean),
-    description: $("#f_desc").value, evidence: $("#f_evid").value,
-    blockers: $("#f_blockers").value.split("\n").map(s => s.trim()).filter(Boolean),
-    depends_on: $("#f_deps").value.split(",").map(s => s.trim()).filter(Boolean),
-    affects: $("#f_affects").value.split(",").map(s => s.trim()).filter(Boolean),
-  };
+  // collect only what's currently editable; other fields pass through unchanged
+  const val = (sel) => $(sel) ? $(sel).value : null;
+  const body = {};
+  const name = val("#f_name"); if (name !== null) body.name = name;
+  body.status = $("#f_status").value;
+  body.priority = +$("#f_priority").value;
+  body.type = $("#f_type").value;
+  const tags = val("#f_tags"); if (tags !== null) body.tags = tags.split(",").map(s => s.trim()).filter(Boolean);
+  const desc = val("#f_desc"); if (desc !== null) body.description = desc;
+  const evid = val("#f_evid"); if (evid !== null) body.evidence = evid;
+  const blockers = val("#f_blockers"); if (blockers !== null)
+    body.blockers = blockers.split(/[,;\n]/).map(s => s.trim()).filter(Boolean);
+  const deps = val("#f_deps"); if (deps !== null) body.depends_on = deps.split(",").map(s => s.trim()).filter(Boolean);
+  const aff = val("#f_affects"); if (aff !== null) body.affects = aff.split(",").map(s => s.trim()).filter(Boolean);
   await api(`/api/tasks/${encodeURIComponent(t.project)}/${t.id}`, {method: "PATCH", body});
-  await reload(); note("saved"); close();
+  await reload(); note("saved"); EDIT.clear(); close();
 }
 
 /* ---------- new task ---------- */
