@@ -453,19 +453,20 @@ function captureScroll() {
 }
 function restoreScroll(s) {
   document.querySelectorAll(".col").forEach(c => {
-    if (s.cols[c.dataset.status] != null) c.scrollTop = s.cols[c.dataset.status];
+    if (s.cols[c.dataset.status] != null && c.scrollTop !== s.cols[c.dataset.status])
+      c.scrollTop = s.cols[c.dataset.status];
   });
   const lw = document.querySelector(".listwrap");
-  if (lw && s.list) lw.scrollTop = s.list;
+  if (lw && s.list && lw.scrollTop !== s.list) lw.scrollTop = s.list;
   const exp = document.querySelector(".expwrap");
-  if (exp && s.exp) exp.scrollTop = s.exp;
+  if (exp && s.exp && exp.scrollTop !== s.exp) exp.scrollTop = s.exp;
 }
 
 async function reload(keepModal) {
   if (!PROJECT) return;
   const d = await api("/api/tasks?project=" + encodeURIComponent(PROJECT));
   TASKS = d.tasks;
-  const h = JSON.stringify(TASKS);
+  const h = JSON.stringify(TASKS.map(({claim_age_hours, ...rest}) => rest));
   const changed = h !== lastHash; lastHash = h;
   if (changed) {  // re-render only when data actually changed; keep scroll positions
     const scroll = captureScroll();

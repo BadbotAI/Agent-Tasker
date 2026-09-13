@@ -46,7 +46,8 @@ def _task_payload(store: Store, task) -> dict:
     data["blocked"] = is_blocked(task, dep_map)
     data["ready"] = is_ready(task, dep_map)
     data["blocked_by"] = unfinished_dep_ids(task, dep_map)
-    data["claim_age_hours"] = claim_age_hours(task)
+    age = claim_age_hours(task)
+    data["claim_age_hours"] = round(age, 4) if age is not None else None
     data["attachments"] = [
         {k: a[k] for k in ("id", "filename", "size", "sha256", "created_at")}
         for a in store.list_attachments(task)
