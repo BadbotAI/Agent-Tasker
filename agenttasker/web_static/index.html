@@ -182,6 +182,10 @@ async function api(path, opts = {}) {
 
 function visibleTasks() {
   if (!QUERY) return TASKS;
+  if (QUERY.startsWith("#")) {  // "#12" — direct task id lookup
+    const id = parseInt(QUERY.slice(1), 10);
+    return Number.isInteger(id) ? TASKS.filter(t => t.id === id) : [];
+  }
   const q = QUERY.toLowerCase();
   return TASKS.filter(t =>
     (t.name || "").toLowerCase().includes(q) ||
