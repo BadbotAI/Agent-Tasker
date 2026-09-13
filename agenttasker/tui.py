@@ -616,8 +616,16 @@ class Board:
 
         age = claim_age_hours(task)
         owner_text = f"{task.owner} (claimed {age:.1f}h ago)" if (task.owner and age is not None) else (task.owner or "unclaimed")
-        atts = len(self.store.list_attachments(task))
-        att_line = f"{atts} file(s) — manage with `agenttasker attachments {task.id}`"
+        def human_size(n: float) -> str:
+            for unit in ("B", "KB", "MB", "GB"):
+                if n < 1024 or unit == "GB":
+                    return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+                n /= 1024
+
+        atts = self.store.list_attachments(task)
+        att_lines = [
+            (f"#{a['id']}  {a['filename']}  ({human_size(a['size'])})", dim) for a in atts
+        ] or [("(none)", dim)]
 
         return [
             block("name", "TITLE", [(task.name, 0)]),
@@ -635,7 +643,7 @@ class Board:
             block("depends_on", "DEPENDS ON", dep_lines(task.depends_on, True)),
             block("affects", "AFFECTS", dep_lines(task.affects, False)),
             block(None, "BLOCKS (TASKS DEPENDING ON THIS)", dep_lines([t.id for t in dependents], True)),
-            block(None, "ATTACHMENTS", [(att_line, dim)]),
+            block(None, "ATTACHMENTS", att_lines),
             block(None, "STATE", [("─", 0), state]),
             block(None, "DATES", [(f"created {task.created_at}  ·  updated {task.updated_at}", dim)]),
         ]

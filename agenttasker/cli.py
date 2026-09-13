@@ -330,7 +330,8 @@ def cmd_show(args, store: Store) -> int:
     if args.json:
         print(jsonlib.dumps(_task_json(store, task), indent=2))
         return 0
-    print(render.detail(task, _project_map(store, project)))
+    print(render.detail(task, _project_map(store, project),
+                        attachments=store.list_attachments(task)))
     return 0
 
 

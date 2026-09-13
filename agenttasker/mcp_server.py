@@ -111,7 +111,7 @@ def build_server():
                 prj = _project(project)
                 task = store.get(prj, ref)
                 by_id = {t.id: t for t in store.list_tasks(prj)}
-                return render.detail(task, by_id)
+                return render.detail(task, by_id, attachments=store.list_attachments(task))
         except TaskError as exc:
             return f"ERROR: {exc}"
 

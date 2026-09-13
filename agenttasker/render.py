@@ -67,7 +67,7 @@ def task_line(task: Task, by_id: dict[int, Task], show_project: bool = False) ->
     return f"{prefix}#{task.id:<4} {task.status:<11} {task.name}{flag_text}"
 
 
-def detail(task: Task, by_id: dict[int, Task]) -> str:
+def detail(task: Task, by_id: dict[int, Task], attachments: list | None = None) -> str:
     """Full task detail with computed dependency state."""
     lines: list[str] = [
         f"{display_ref(task.project, task.id)}  {task.name}",
@@ -108,6 +108,11 @@ def detail(task: Task, by_id: dict[int, Task]) -> str:
         lines.append("  (none)")
 
     dependents = [t for t in by_id.values() if task.id in t.depends_on and t.id != task.id]
+
+    if attachments:
+        lines.append("Attachments:")
+        lines.extend(f"  - #{a['id']} {a['filename']} ({a['size']} bytes)" for a in attachments)
+
     lines.append("Blocks (tasks depending on this):")
     if dependents:
         lines.extend(f"  - {_dep_label(t.id, by_id)}" for t in dependents)
