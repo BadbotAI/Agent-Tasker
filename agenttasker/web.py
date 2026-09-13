@@ -268,11 +268,12 @@ def build_handler(store_path: Path | None, default_project: str | None):
                 atts = {a["id"]: a for a in store.list_attachments(task)}
                 filename = atts.get(int(parts[3]), {}).get("filename", "attachment")
             content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
-            disposition = "inline" if content_type.startswith(("image/", "text/", "application/pdf")) else "attachment"
-            self._send(
-                200, data, content_type,
-                {"Content-Disposition": f'{disposition}; filename="{filename}"'},
-            )
+            # render in-browser when possible (browsers fall back to a download
+            # for types they can't display); sandbox script-capable types
+            headers = {"Content-Disposition": f'inline; filename="{filename}"'}
+            if content_type in ("text/html", "image/svg+xml", "application/xhtml+xml"):
+                headers["Content-Security-Policy"] = "sandbox"
+            self._send(200, data, content_type, headers)
 
     return Handler
 
