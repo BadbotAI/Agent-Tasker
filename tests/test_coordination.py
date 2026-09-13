@@ -322,18 +322,22 @@ class PerProjectIdTest(unittest.TestCase):
         raw.commit()
         raw.close()
 
-        with Store(db_path) as store:  # opening triggers the migration
+        with Store(db_path) as store:  # opening converts the layout, ids PRESERVED
             alpha = {t.name: t for t in store.list_tasks("alpha")}
             beta = store.list_tasks("beta")
-            self.assertEqual((alpha["first"].id, alpha["second"].id), (1, 2))  # dense per project
-            self.assertEqual(beta[0].id, 1)
+            self.assertEqual((alpha["first"].id, alpha["second"].id), (1, 3))  # unchanged
+            self.assertEqual(beta[0].id, 2)                                     # unchanged
             second = alpha["second"]
-            self.assertEqual(second.depends_on, [1])          # remapped from old id 1 -> new 1
+            self.assertEqual(second.depends_on, [1])
             atts = store.list_attachments(second)
             self.assertEqual([(a["filename"], a["id"]) for a in atts], [("f.txt", 1)])
-            # a second open is a no-op (idempotent)
-        with Store(db_path) as store2:
-            self.assertEqual(sorted(t.id for t in store2.list_tasks("alpha")), [1, 2])
+            # allocation continues from each project's own max
+            nxt = store.add_task("alpha", "third")
+            self.assertEqual(nxt.id, 4)
+            nxt_b = store.add_task("beta", "another")
+            self.assertEqual(nxt_b.id, 3)
+        with Store(db_path) as store2:  # second open is a no-op
+            self.assertEqual(sorted(t.id for t in store2.list_tasks("alpha")), [1, 3, 4])
 
 
 class ListOrderTest(unittest.TestCase):

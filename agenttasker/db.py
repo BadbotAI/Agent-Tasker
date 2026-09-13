@@ -1,11 +1,10 @@
 """SQLite storage layer. Single local file, WAL mode, no server.
 
-Task ids are PER-PROJECT (dense 1..N): the primary key is (project, id).
-Databases from the older global-id layout are migrated in place on first
-open — tasks are renumbered per project and every depends_on/affects
-reference and attachment row is remapped.
+Task ids are PER-PROJECT: the primary key is (project, id), and new tasks
+allocate max(id)+1 within their project. Databases from the older
+global-autoincrement layout are converted in place on first open WITHOUT
+renumbering — existing ids are preserved exactly.
 """
-
 from __future__ import annotations
 
 import json
@@ -62,49 +61,24 @@ def _pk_columns(conn: sqlite3.Connection, table: str) -> list[str]:
     return [r["name"] for r in sorted((r for r in rows if r["pk"]), key=lambda r: r["pk"])]
 
 
-def _migrate_global_ids(conn: sqlite3.Connection) -> None:
-    """One-time renumbering from the legacy global-id layout to per-project ids.
-
-    Runs inside a single transaction; every depends_on/affects reference and
-    attachments.task_id is remapped to the new ids.
+def _migrate_legacy_layout(conn: sqlite3.Connection) -> None:
+    """Convert the legacy global-autoincrement layout to the composite
+    (project, id) primary key, preserving every existing id. Attachment rows
+    and depends_on/affects references are already project-local, so they are
+    carried over verbatim. New tasks allocate per-project max+1 from here on.
     """
     conn.execute("BEGIN IMMEDIATE")
     try:
-        rows = conn.execute("SELECT * FROM tasks ORDER BY project, id").fetchall()
-        remap: dict[str, dict[int, int]] = {}
-        new_rows = []
-        counter: dict[str, int] = {}
-        for row in rows:
-            project = row["project"]
-            counter[project] = counter.get(project, 0) + 1
-            remap.setdefault(project, {})[row["id"]] = counter[project]
-            new_rows.append((row, counter[project]))
-
         conn.execute("ALTER TABLE tasks RENAME TO tasks_legacy")
         conn.executescript(SCHEMA)
-        for row, new_id in new_rows:
-            project = row["project"]
-            deps = [remap[project].get(i, i) for i in json.loads(row["depends_on"] or "[]")]
-            links = [remap[project].get(i, i) for i in json.loads(row["affects"] or "[]")]
-            conn.execute(
-                "INSERT INTO tasks (project, id, name, status, description, evidence, blockers,"
-                " depends_on, affects, owner, claimed_at, priority, type, tags,"
-                " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    project, new_id, row["name"], row["status"], row["description"],
-                    row["evidence"], row["blockers"],
-                    json.dumps(deps), json.dumps(links),
-                    row["owner"], row["claimed_at"], row["priority"], row["type"], row["tags"],
-                    row["created_at"], row["updated_at"],
-                ),
-            )
-        for project, mapping in remap.items():
-            for old_id, new_id in mapping.items():
-                if old_id != new_id:
-                    conn.execute(
-                        "UPDATE attachments SET task_id=? WHERE project=? AND task_id=?",
-                        (new_id, project, old_id),
-                    )
+        conn.execute(
+            "INSERT INTO tasks (project, id, name, status, description, evidence, blockers,"
+            " depends_on, affects, owner, claimed_at, priority, type, tags,"
+            " created_at, updated_at)"
+            " SELECT project, id, name, status, description, evidence, blockers,"
+            " depends_on, affects, owner, claimed_at, priority, type, tags,"
+            " created_at, updated_at FROM tasks_legacy"
+        )
         conn.execute("DROP TABLE tasks_legacy")
         conn.execute("DELETE FROM sqlite_sequence WHERE name='tasks'")
         conn.commit()
@@ -123,7 +97,7 @@ def connect(path: str | Path) -> sqlite3.Connection:
     fresh = len(conn.execute("PRAGMA table_info(tasks)").fetchall()) == 0
     conn.executescript(SCHEMA)
     if not fresh and _pk_columns(conn, "tasks") == ["id"]:
-        _migrate_global_ids(conn)  # legacy layout: global autoincrement ids
+        _migrate_legacy_layout(conn)  # legacy layout: composite pk, ids preserved
     existing = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
     for table, column, decl in _MIGRATIONS:
         if column not in existing:
