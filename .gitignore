@@ -6,3 +6,4 @@ build/
 *.egg-info/
 .pytest_cache/
 tasks.db*
+.DS_Store

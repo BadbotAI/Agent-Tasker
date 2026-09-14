@@ -1,0 +1,686 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentTasker — AI Agent 和人类共用的本地任务看板</title>
+<meta name="description" content="一个 SQLite 文件，没有服务器没有账号。CLI + TUI + Web + MCP，四个入口读写同一块任务板。为多 Agent 协作设计的原子 claim 锁。">
+<style>
+  :root {
+    --bg: #ffffff;
+    --surface: #f7f8fa;
+    --surface-2: #eef0f4;
+    --border: #dfe3e9;
+    --text: #16181d;
+    --muted: #626b7a;
+    --faint: #8c95a3;
+    --accent: #b4690e;
+    --accent-soft: #fdf3e4;
+
+    --s-deferred: #7a828f;
+    --s-backlog: #5f6875;
+    --s-todo: #1f6feb;
+    --s-progress: #b4690e;
+    --s-review: #7c4ddb;
+    --s-done: #1a7f37;
+
+    --code-bg: #14161b;
+    --code-text: #e3e6ea;
+    --code-muted: #8b94a3;
+
+    --radius: 10px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+            "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115;
+      --surface: #16191f;
+      --surface-2: #1c2029;
+      --border: #272c37;
+      --text: #e6e9ee;
+      --muted: #9aa3b2;
+      --faint: #737d8c;
+      --accent: #f0a33a;
+      --accent-soft: #2a2113;
+
+      --s-deferred: #6b7280;
+      --s-backlog: #858c99;
+      --s-todo: #58a6ff;
+      --s-progress: #f0a33a;
+      --s-review: #a78bfa;
+      --s-done: #3fb950;
+
+      --code-bg: #0a0c10;
+      --code-text: #dfe3e9;
+      --code-muted: #7d8794;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 860px;
+    margin: 0 auto;
+    padding-inline: 20px;
+  }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  code { font-family: var(--mono); font-size: 0.9em; }
+
+  /* --- top bar --- */
+  .topbar {
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  .topbar .wrap {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding-block: 13px;
+  }
+  .brand {
+    font-family: var(--mono);
+    font-weight: 600;
+    font-size: 15px;
+    letter-spacing: -0.01em;
+    color: var(--text);
+  }
+  .brand:hover { text-decoration: none; }
+  .topnav { display: flex; gap: 18px; font-size: 14px; }
+  .topnav a { color: var(--muted); }
+  .topnav a:hover { color: var(--text); text-decoration: none; }
+
+  /* --- hero --- */
+  .hero { padding-block: 68px 52px; }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin: 0 0 18px;
+  }
+  h1 {
+    font-size: clamp(34px, 7vw, 52px);
+    line-height: 1.1;
+    letter-spacing: -0.025em;
+    font-weight: 700;
+    margin: 0 0 20px;
+  }
+  .lede {
+    font-size: clamp(17px, 2.4vw, 20px);
+    line-height: 1.6;
+    color: var(--muted);
+    max-width: 60ch;
+    margin: 0 0 32px;
+  }
+  .lede strong { color: var(--text); font-weight: 600; }
+
+  .cta { display: flex; flex-wrap: wrap; gap: 10px; }
+  .btn {
+    display: inline-block;
+    padding: 9px 18px;
+    border-radius: 8px;
+    font-size: 14.5px;
+    font-weight: 600;
+    border: 1px solid var(--border);
+    color: var(--text);
+    background: var(--surface);
+  }
+  .btn:hover { background: var(--surface-2); text-decoration: none; }
+  .btn-primary {
+    background: var(--text);
+    color: var(--bg);
+    border-color: var(--text);
+  }
+  .btn-primary:hover { opacity: 0.85; background: var(--text); }
+
+  /* --- sections --- */
+  section { padding-block: 46px; border-top: 1px solid var(--border); }
+  h2 {
+    font-size: clamp(23px, 3.4vw, 29px);
+    line-height: 1.25;
+    letter-spacing: -0.02em;
+    font-weight: 700;
+    margin: 0 0 10px;
+  }
+  h3 {
+    font-size: 17px;
+    font-weight: 650;
+    margin: 0 0 8px;
+    letter-spacing: -0.01em;
+  }
+  .sub { color: var(--muted); margin: 0 0 30px; max-width: 62ch; }
+  p { margin: 0 0 16px; }
+  p:last-child { margin-bottom: 0; }
+
+  /* --- status pipeline --- */
+  .pipeline {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+    gap: 10px;
+    margin-bottom: 22px;
+  }
+  .stage {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-top: 3px solid var(--sc);
+    border-radius: var(--radius);
+    padding: 13px 14px 15px;
+  }
+  .stage-name {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--sc);
+    margin-bottom: 5px;
+    word-break: break-all;
+  }
+  .stage-desc { font-size: 13px; line-height: 1.5; color: var(--muted); }
+
+  .callout {
+    background: var(--accent-soft);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--radius);
+    padding: 15px 18px;
+    font-size: 15px;
+  }
+  .callout p { margin-bottom: 10px; }
+
+  /* --- feature cards --- */
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 14px;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+  }
+  .card-num {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--faint);
+    margin-bottom: 10px;
+  }
+  .card p { font-size: 14.5px; color: var(--muted); line-height: 1.6; }
+  .card p strong { color: var(--text); font-weight: 600; }
+
+  /* --- code --- */
+  .code {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    margin-bottom: 18px;
+  }
+  .code-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 9px 14px;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--code-muted);
+  }
+  .code pre {
+    margin: 0;
+    padding: 15px;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--code-text);
+    tab-size: 2;
+  }
+  .p { color: var(--s-done); user-select: none; }
+  .o { color: var(--code-muted); }
+  .err { color: #ff7b72; }
+  .ok { color: var(--s-done); }
+  .k { color: var(--s-todo); }
+  .cm { color: var(--code-muted); font-style: italic; }
+
+  /* --- table --- */
+  .tablewrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+  table { border-collapse: collapse; width: 100%; min-width: 520px; font-size: 14.5px; }
+  th, td { text-align: left; padding: 11px 15px; border-bottom: 1px solid var(--border); }
+  th {
+    background: var(--surface);
+    font-size: 12.5px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  tr:last-child td { border-bottom: none; }
+  td code { background: var(--surface-2); padding: 2px 6px; border-radius: 4px; }
+  .who { color: var(--muted); font-size: 13.5px; }
+
+  /* --- tool pills --- */
+  .pills { display: flex; flex-wrap: wrap; gap: 7px; }
+  .pill {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--muted);
+  }
+
+  /* --- limits list --- */
+  .limits { list-style: none; padding: 0; margin: 0; }
+  .limits li {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 17px;
+    margin-bottom: 10px;
+    font-size: 14.5px;
+    color: var(--muted);
+    background: var(--surface);
+  }
+  .limits li:last-child { margin-bottom: 0; }
+  .limits b { color: var(--text); font-weight: 600; display: block; margin-bottom: 3px; }
+
+  /* --- stats --- */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 12px;
+  }
+  .stat {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 18px;
+    background: var(--surface);
+  }
+  .stat-n {
+    font-family: var(--mono);
+    font-size: 25px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    display: block;
+    margin-bottom: 2px;
+  }
+  .stat-l { font-size: 13px; color: var(--muted); }
+
+  /* --- footer --- */
+  footer {
+    border-top: 1px solid var(--border);
+    padding-block: 32px 48px;
+    font-size: 14px;
+    color: var(--muted);
+  }
+  footer p { margin-bottom: 9px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="wrap">
+    <a class="brand" href="#">AgentTasker</a>
+    <nav class="topnav">
+      <a href="#design">核心设计</a>
+      <a href="#start">快速开始</a>
+      <a href="#mcp">MCP</a>
+      <a href="https://github.com/BadbotAI/Agent-Tasker">仓库</a>
+    </nav>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <header class="hero">
+    <p class="eyebrow">Local-first / CLI + TUI + Web + MCP</p>
+    <h1>给 AI Agent 和人类<br>共用的任务看板</h1>
+    <p class="lede">
+      一个 SQLite 文件，<strong>没有服务器、没有账号、没有云</strong>。
+      人看终端界面或网页，Agent 走 CLI 或 MCP，四个入口读写同一块板子。
+      核心是一把数据库层的原子锁：两个 Agent 抢同一个任务，第二个会被直接拒绝。
+    </p>
+    <div class="cta">
+      <a class="btn btn-primary" href="https://github.com/BadbotAI/Agent-Tasker">在 GitHub 上查看</a>
+      <a class="btn" href="#start">安装</a>
+      <a class="btn" href="https://github.com/mattdf/agent-tasker">上游项目</a>
+    </div>
+  </header>
+
+  <section id="design">
+    <h2>核心设计</h2>
+    <p class="sub">
+      它不是又一个 todo 工具。四个设计决定都是冲着"AI Agent 干活不靠自觉"来的。
+    </p>
+
+    <h3>一、状态流是六列，不是三列</h3>
+    <div class="pipeline">
+      <div class="stage" style="--sc: var(--s-deferred)">
+        <div class="stage-name">deferred</div>
+        <div class="stage-desc">先搁着，以后再说</div>
+      </div>
+      <div class="stage" style="--sc: var(--s-backlog)">
+        <div class="stage-name">backlog</div>
+        <div class="stage-desc">收了，还没排期</div>
+      </div>
+      <div class="stage" style="--sc: var(--s-todo)">
+        <div class="stage-name">todo</div>
+        <div class="stage-desc">依赖清了，能开工</div>
+      </div>
+      <div class="stage" style="--sc: var(--s-progress)">
+        <div class="stage-name">in_progress</div>
+        <div class="stage-desc">有人占着，正在做</div>
+      </div>
+      <div class="stage" style="--sc: var(--s-review)">
+        <div class="stage-name">in_review</div>
+        <div class="stage-desc">做完了，<b>但没验证</b></div>
+      </div>
+      <div class="stage" style="--sc: var(--s-done)">
+        <div class="stage-name">done</div>
+        <div class="stage-desc">跑过了，<b>验证通过</b></div>
+      </div>
+    </div>
+    <div class="callout">
+      <p><b>关键区分：<code>in_review</code> 和 <code>done</code> 不是一回事。</b></p>
+      <p style="margin-bottom:0">
+        <code>in_review</code> = 做完了但没验证，<code>done</code> = 跑过测试证明了。
+        这条专门为 Agent 设的 —— 防止 Agent 自己宣布"我做完了"就算结案。
+        规则写死在项目的 SKILL.md 里：只有真跑过代码/测试/命令，才能标 done，而且要把跑了什么记进证据流水。
+      </p>
+    </div>
+
+    <div class="cards" style="margin-top: 34px;">
+      <div class="card">
+        <div class="card-num">02</div>
+        <h3>claim 是一把原子锁</h3>
+        <p>
+          认领任务不是"改个字段"，而是一条<strong>带条件的 UPDATE</strong>：
+          只有当任务无主、或者本来就是你的，这条语句才会命中一行。
+          第二个 Agent 抢同一个任务，数据库直接让它落空。
+          并发安全不靠 Agent 讲礼貌，靠 SQLite 的 WAL 事务。
+        </p>
+      </div>
+      <div class="card">
+        <div class="card-num">03</div>
+        <h3>先写分析，才能开工</h3>
+        <p>
+          每个任务有个 <code>evidence</code> 字段，用来记<strong>动手之前</strong>的分析：
+          读了哪些文件、选了什么方案、发现什么约束。
+          它是带时间戳的追加流水，不是可以随手覆盖的文本框 ——
+          想把任务推进 <code>in_progress</code>，先把想清楚的东西留下来。
+        </p>
+      </div>
+      <div class="card">
+        <div class="card-num">04</div>
+        <h3>能不能干，是算出来的</h3>
+        <p>
+          <strong>ready</strong> = 在 backlog/todo + 没人占 + 没外部阻塞 + 所有依赖都 done。<br>
+          <strong>blocked</strong> = 没完成 + 有未完成依赖或开放阻塞。<br>
+          没人需要手工维护这两个状态。所以 <code>ls --ready</code> 一条命令就回答"现在该干什么"，P0 排最前。
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>两个 Agent 抢同一个任务</h2>
+    <p class="sub">
+      下面是真实终端输出。claude-a 先认领，claude-b 随后来抢。
+    </p>
+
+    <div class="code">
+      <div class="code-head"><span>终端</span><span>claim 冲突</span></div>
+<pre><span class="p">$</span> atx claim 1 --owner claude-a
+<span class="ok">SmokeTest-1 claimed by claude-a (status -&gt; in_progress)</span>
+
+<span class="p">$</span> atx claim 1 --owner claude-b
+<span class="err">error: SmokeTest-1 already claimed by 'claude-a'
+       (since 2026-09-14T03:29:55+00:00); use --force to take it</span>
+<span class="o">退出码 1</span></pre>
+    </div>
+
+    <p class="sub" style="margin-bottom:14px">拒绝发生在数据库这一层，就这一条语句：</p>
+    <div class="code">
+      <div class="code-head"><span>core.py</span><span>Store.claim</span></div>
+<pre><span class="k">UPDATE</span> tasks <span class="k">SET</span> owner=?, claimed_at=?, status=<span class="ok">'in_progress'</span>, updated_at=?
+ <span class="k">WHERE</span> project=? <span class="k">AND</span> id=? <span class="k">AND</span> (owner=<span class="ok">''</span> <span class="k">OR</span> owner=? <span class="k">OR</span> ?)
+<span class="cm">                        无主        或本来就是你的    或 --force</span></pre>
+    </div>
+    <p style="color: var(--muted); font-size: 14.5px;">
+      命中 0 行就回滚、抛错、告诉你现在的持有者是谁、占了多久。
+      配套还有 <code>release</code>（还回去）、<code>handoff</code>（交给别人）、
+      <code>claims --stale 12</code>（谁占着超过 12 小时没动，该去问了）。
+    </p>
+  </section>
+
+  <section>
+    <h2>依赖是真的会拦住你</h2>
+    <p class="sub">任务 2 依赖任务 1。1 没做完，2 就进不了 ready 列表 —— 也是真实输出。</p>
+    <div class="code">
+      <div class="code-head"><span>终端</span><span>依赖自动解锁</span></div>
+<pre><span class="p">$</span> atx ls --blocked
+<span class="o">#2    backlog     出漫画  [feature deps:#1]</span>
+
+<span class="p">$</span> atx done 1
+<span class="p">$</span> atx ls --ready
+<span class="o">#2    backlog     出漫画  [feature </span><span class="ok">ready</span><span class="o">]</span>   <span class="cm">← 自动解锁了</span></pre>
+    </div>
+  </section>
+
+  <section>
+    <h2>四个入口，一块板子</h2>
+    <p class="sub">同一个 SQLite 文件。CLI 改的东西，终端界面 0.5 秒内就刷新出来。</p>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>入口</th><th>命令</th><th>谁用</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><b>CLI</b></td>
+            <td><code>atx</code></td>
+            <td class="who">Agent + 人</td>
+            <td class="who">短别名，和 <code>agenttasker</code> 等价</td>
+          </tr>
+          <tr>
+            <td><b>TUI</b></td>
+            <td><code>atx board</code></td>
+            <td class="who">人</td>
+            <td class="who">终端里的六列看板，监听数据库变化自动刷新</td>
+          </tr>
+          <tr>
+            <td><b>Web</b></td>
+            <td><code>atx serve</code></td>
+            <td class="who">人</td>
+            <td class="who">本地网页，纯标准库，默认只绑 127.0.0.1</td>
+          </tr>
+          <tr>
+            <td><b>MCP</b></td>
+            <td><code>atx mcp</code></td>
+            <td class="who">Agent</td>
+            <td class="who">stdio 服务器，13 个工具</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="start">
+    <h2>快速开始</h2>
+    <p class="sub">Python 3.10+。核心零依赖，<code>[mcp]</code> 只在需要 MCP 服务器时装。</p>
+
+    <div class="code">
+      <div class="code-head"><span>安装</span></div>
+<pre><span class="p">$</span> git clone https://github.com/BadbotAI/Agent-Tasker.git
+<span class="p">$</span> cd Agent-Tasker
+<span class="p">$</span> python3 -m venv .venv &amp;&amp; .venv/bin/pip install -e <span class="ok">'.[mcp]'</span></pre>
+    </div>
+
+    <div class="code">
+      <div class="code-head"><span>用起来</span></div>
+<pre><span class="cm"># 建任务，带描述、前置分析、优先级、标签</span>
+<span class="p">$</span> atx add <span class="ok">"修登录跳转"</span> -d <span class="ok">"302 时 cookie 丢了"</span> \
+      -e <span class="ok">"已定位到 SameSite=None"</span> --status todo --priority P1 --tag web
+
+<span class="cm"># 建一个依赖前者的任务</span>
+<span class="p">$</span> atx add <span class="ok">"补回归测试"</span> --dep 1
+
+<span class="cm"># 现在能干什么（P0 排最前）</span>
+<span class="p">$</span> atx ls --ready
+
+<span class="cm"># 原子认领，顺带推进 in_progress</span>
+<span class="p">$</span> atx claim 1 --owner agent-7
+
+<span class="cm"># 边干边追加发现</span>
+<span class="p">$</span> atx update 1 --append-evidence <span class="ok">"复现确认，见 tests/e2e"</span>
+
+<span class="cm"># 验证通过，收工</span>
+<span class="p">$</span> atx done 1
+
+<span class="cm"># 人类看板</span>
+<span class="p">$</span> atx board</pre>
+    </div>
+
+    <p style="color: var(--muted); font-size: 14.5px;">
+      任务按<b>项目</b>分命名空间，默认取 git 仓库名，可以用 <code>-p</code> 或
+      <code>$AGENTTASKER_PROJECT</code> 覆盖。引用写 <code>12</code> 或 <code>项目名-12</code> 都行。
+      数据库默认落在 <code>~/.local/share/agenttasker/tasks.db</code>，
+      用 <code>$AGENTTASKER_DB</code> 换地方。附件按 sha256 内容寻址存在数据库旁边。
+    </p>
+  </section>
+
+  <section id="mcp">
+    <h2>接进 Agent</h2>
+    <p class="sub">
+      标准 stdio MCP 服务器，Claude Desktop、Claude Code、任何 MCP 客户端都能接。
+      服务器从工作目录的 git 仓库名推断项目，每个工具也都接受显式的 <code>project</code> 参数。
+    </p>
+
+    <div class="code">
+      <div class="code-head"><span>MCP 客户端配置</span></div>
+<pre>{
+  <span class="k">"mcpServers"</span>: {
+    <span class="k">"agenttasker"</span>: {
+      <span class="k">"command"</span>: <span class="ok">"/path/to/Agent-Tasker/.venv/bin/agenttasker"</span>,
+      <span class="k">"args"</span>: [<span class="ok">"mcp"</span>],
+      <span class="k">"env"</span>: { <span class="k">"AGENTTASKER_DB"</span>: <span class="ok">"/Users/you/.local/share/agenttasker/tasks.db"</span> }
+    }
+  }
+}</pre>
+    </div>
+
+    <h3 style="margin-top: 28px;">13 个工具</h3>
+    <div class="pills">
+      <span class="pill">add_task</span>
+      <span class="pill">get_task</span>
+      <span class="pill">list_tasks</span>
+      <span class="pill">update_task</span>
+      <span class="pill">set_status</span>
+      <span class="pill">delete_task</span>
+      <span class="pill">claim_task</span>
+      <span class="pill">release_task</span>
+      <span class="pill">handoff_task</span>
+      <span class="pill">add_attachment</span>
+      <span class="pill">list_attachments</span>
+      <span class="pill">read_attachment</span>
+      <span class="pill">list_projects</span>
+    </div>
+    <p style="color: var(--muted); font-size: 14.5px; margin-top: 18px;">
+      <code>list_tasks</code> 支持 <code>ready</code> / <code>blocked</code> /
+      <code>priority</code> / <code>tag</code> / <code>stale_hours</code> / <code>all_projects</code> 过滤。
+      附件走 base64 进出，Agent 可以直接挂截图和日志。
+      完整的 Agent 工作纪律写在仓库的
+      <a href="https://github.com/BadbotAI/Agent-Tasker/blob/main/SKILL.md">SKILL.md</a>。
+    </p>
+  </section>
+
+  <section>
+    <h2>项目体量</h2>
+    <p class="sub">模块划得干净：领域逻辑、存储、四个入口各自独立。</p>
+    <div class="stats">
+      <div class="stat"><span class="stat-n">4,380</span><span class="stat-l">行 Python</span></div>
+      <div class="stat"><span class="stat-n">38</span><span class="stat-l">个测试，全过</span></div>
+      <div class="stat"><span class="stat-n">0.4s</span><span class="stat-l">测试耗时</span></div>
+      <div class="stat"><span class="stat-n">0</span><span class="stat-l">核心依赖</span></div>
+    </div>
+    <p style="color: var(--muted); font-size: 14.5px; margin-top: 20px;">
+      存储层带完整的<b>就地迁移</b>：老版本的全局自增 id 会迁成
+      <code>(project, id)</code> 复合主键且保留原 id，老版本的 evidence 文本块会被解析成带时间戳的行再删列。
+      还能 <code>export</code> 成版本化 JSON（附件 base64 内嵌）搬到另一台机器 <code>import --merge</code> ——
+      这是它不要云服务也能跨机器的解法。
+    </p>
+  </section>
+
+  <section>
+    <h2>它不能做什么</h2>
+    <p class="sub">实话部分。装之前值得知道。</p>
+    <ul class="limits">
+      <li>
+        <b>这个页面不是看板，只是介绍</b>
+        网页看板是 <code>atx serve</code> 起的 Python 服务器，读你本机的 SQLite。
+        GitHub Pages 只托管静态文件，跑不了。要在线共享看板，得找能跑 Python 的地方。
+      </li>
+      <li>
+        <b>项目很新，API 可能会变</b>
+        上游 33 个提交，还在高频开发中。别把关键流程焊死在当前命令行参数上。
+      </li>
+      <li>
+        <b>上游 pyproject 声明 MIT，但仓库里没有 LICENSE 文件</b>
+        要正式商用的话，建议先找作者确认。
+      </li>
+      <li>
+        <b>网页界面没有任何鉴权</b>
+        靠默认绑 127.0.0.1 保护。有 <code>--host</code> 参数，但千万别设成
+        <code>0.0.0.0</code> —— 那等于把任务板裸奔在局域网上。而且是 2 秒轮询，不是 WebSocket。
+      </li>
+      <li>
+        <b>终端看板只支持 POSIX</b>
+        curses 实现，macOS 和 Linux 没问题，Windows 会有麻烦。
+      </li>
+    </ul>
+  </section>
+
+</div>
+
+<footer>
+  <div class="wrap">
+    <p>
+      本仓库 fork 自 <a href="https://github.com/mattdf/agent-tasker">mattdf/agent-tasker</a>，
+      原作者 mattdf，完整提交历史和作者信息均已保留。上游 <code>pyproject.toml</code> 声明 MIT。
+    </p>
+    <p style="margin-bottom:0">
+      <a href="https://github.com/BadbotAI/Agent-Tasker">BadbotAI/Agent-Tasker</a>
+      &nbsp;·&nbsp;
+      <a href="https://github.com/BadbotAI/Agent-Tasker/blob/main/README.md">README</a>
+      &nbsp;·&nbsp;
+      <a href="https://github.com/BadbotAI/Agent-Tasker/blob/main/SKILL.md">SKILL.md</a>
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>
